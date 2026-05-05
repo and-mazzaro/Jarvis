@@ -1,0 +1,47 @@
+appId: com.jarvis.local-assistant
+productName: Jarvis
+copyright: "© 2025 Jarvis Local AI"
+
+directories:
+  buildResources: electron/assets
+  output: dist-electron
+
+files:
+  - electron/**/*
+  - frontend/dist/**/*
+  - "!node_modules/**/*"
+  - "!backend/**/*"
+  - "!.venv/**/*"
+  - "!chroma_db/**/*"
+  - "!documents/**/*"
+
+extraResources:
+  - from: backend/
+    to: backend/
+    filter:
+      - "**/*"
+      - "!__pycache__/**"
+      - "!.venv/**"
+  - from: launch.bat
+    to: launch.bat
+  - from: setup.bat
+    to: setup.bat
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: electron/assets/icon.ico
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: electron/assets/icon.ico
+  uninstallerIcon: electron/assets/icon.ico
+  installerHeaderIcon: electron/assets/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Jarvis
+
+publish: null

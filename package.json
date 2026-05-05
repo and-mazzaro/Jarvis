@@ -1,0 +1,22 @@
+{
+  "name": "jarvis-windows",
+  "version": "1.0.0",
+  "description": "Jarvis — Local AI Voice Assistant for Windows",
+  "main": "electron/main.js",
+  "scripts": {
+    "start":      "electron .",
+    "dev":        "electron . --inspect",
+    "copy-dist":  "xcopy /E /Y /I frontend\\src\\* frontend\\dist\\ > nul && echo frontend/dist updated",
+    "predeploy":  "npm run copy-dist",
+    "build":      "electron-builder --config electron/electron-builder.yml",
+    "build:dir":  "electron-builder --config electron/electron-builder.yml --dir"
+  },
+  "keywords": ["jarvis", "ai", "voice", "assistant", "ollama", "offline"],
+  "author": "Jarvis Team",
+  "license": "MIT",
+  "devDependencies": {
+    "electron":         "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {}
+}

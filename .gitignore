@@ -1,0 +1,53 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.spec
+
+# ChromaDB & user data
+chroma_db/
+documents/
+
+# TTS model files (large binary — user must download)
+kokoro-v1.0.onnx
+voices-v1.0.bin
+voices-v1.0.json
+
+# Kiwix ZIM and executables
+*.zim
+kiwix-*.exe
+
+# Ollama (managed by Ollama daemon)
+.ollama/
+
+# Node / Electron
+node_modules/
+dist-electron/
+.npm/
+.cache/
+scratch/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local

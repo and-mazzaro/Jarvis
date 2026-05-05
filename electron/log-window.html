@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Jarvis — Backend Logs</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #050810;
+      color: #a0b4c8;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #toolbar {
+      padding: 10px 16px;
+      background: #0d1120;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #toolbar span { font-size: 13px; font-weight: 600; color: #f0f4ff; letter-spacing: 1px; }
+    button {
+      background: rgba(0,212,255,0.1);
+      border: 1px solid rgba(0,212,255,0.3);
+      border-radius: 6px;
+      color: #00d4ff;
+      font-size: 11px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    button:hover { background: rgba(0,212,255,0.2); }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #log::-webkit-scrollbar { width: 4px; }
+    #log::-webkit-scrollbar-thumb { background: #223344; border-radius: 4px; }
+    .err { color: #ff6666; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span>Backend Logs</span>
+    <button id="btn-clear">Clear</button>
+    <button id="btn-bottom">↓ Bottom</button>
+  </div>
+  <div id="log"></div>
+  <script>
+    const log = document.getElementById('log');
+    let autoScroll = true;
+
+    window.jarvisIPC.onLogLine(data => {
+      const lines = data.split('\n');
+      lines.forEach(line => {
+        const span = document.createElement('span');
+        span.className = line.startsWith('[ERR]') ? 'err' : '';
+        span.textContent = line + '\n';
+        log.appendChild(span);
+      });
+      if (autoScroll) log.scrollTop = log.scrollHeight;
+    });
+
+    document.getElementById('btn-clear').addEventListener('click', () => {
+      log.innerHTML = '';
+    });
+    document.getElementById('btn-bottom').addEventListener('click', () => {
+      log.scrollTop = log.scrollHeight;
+      autoScroll = true;
+    });
+    log.addEventListener('scroll', () => {
+      autoScroll = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    });
+  </script>
+</body>
+</html>

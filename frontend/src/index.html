@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Jarvis — your local AI voice assistant powered by Ollama, with offline Wikipedia and personal document knowledge base." />
+  <title>Jarvis — Assistente IA Locale</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
+  <style>
+    /* ===== CSS RESET & VARIABLES ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-deep:   #050810;
+      --bg-card:   #0d1120;
+      --bg-glass:  rgba(13,17,32,0.7);
+      --border:    rgba(255,255,255,0.07);
+      --accent1:   #00d4ff;
+      --accent2:   #7b2fff;
+      --accent3:   #ff6b35;
+      --text-hi:   #f0f4ff;
+      --text-mid:  #8899bb;
+      --text-lo:   #445566;
+      --green:     #00e676;
+      --red:       #ff4444;
+      --amber:     #ffaa00;
+      --radius:    14px;
+      --sidebar-w: 64px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg-deep);
+      color: var(--text-hi);
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ===== LAYOUT ===== */
+    #app {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* ===== CUSTOM TITLE BAR ===== */
+    #title-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 32px;
+      background: rgba(0,0,0,0.2);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 9999;
+      -webkit-app-region: drag;
+    }
+    #window-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--text-lo);
+      margin-left: 15px;
+      pointer-events: none;
+    }
+    #window-controls {
+      display: flex;
+      height: 100%;
+      -webkit-app-region: no-drag;
+    }
+    .win-btn {
+      width: 45px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .win-btn svg { width: 12px; height: 12px; stroke: var(--text-mid); stroke-width: 2; fill: none; }
+    .win-btn:hover { background: rgba(255,255,255,0.1); }
+    .win-btn.close:hover { background: #e81123; }
+    .win-btn.close:hover svg { stroke: white; }
+
+    /* ===== SIDEBAR REFINEMENT ===== */
+    #sidebar {
+      margin-top: 32px; /* Avoid title bar */
+      background: rgba(8, 12, 24, 0.8);
+      border-right: 1px solid var(--border);
+    }
+    
+    #main {
+      padding-top: 32px;
+    }
+
+    #orb-view {
+      background: radial-gradient(circle at center, #0a1128 0%, #050810 100%);
+    }
+
+
+    .sidebar-logo {
+      width: 38px;
+      height: 38px;
+      background: linear-gradient(135deg, var(--accent1), var(--accent2));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 14px;
+      font-weight: 900;
+      color: white;
+      margin-bottom: 16px;
+      box-shadow: 0 0 20px rgba(0,212,255,0.3);
+    }
+
+    .sidebar-divider { width: 32px; height: 1px; background: var(--border); margin: 8px 0; }
+
+    .sidebar-btn {
+      width: 44px;
+      height: 44px;
+      border: none;
+      background: transparent;
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-mid);
+      transition: all 0.2s;
+      position: relative;
+    }
+    .sidebar-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-hi); }
+    .sidebar-btn.active { background: rgba(0,212,255,0.12); color: var(--accent1); }
+    .sidebar-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    .sidebar-btn .tooltip {
+      position: absolute;
+      left: calc(100% + 10px);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-hi);
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    .sidebar-btn:hover .tooltip { opacity: 1; }
+
+    /* ===== MAIN AREA ===== */
+    #main {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* ===== ORB VIEW ===== */
+    #orb-view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.4s, transform 0.4s;
+    }
+    #orb-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.97); }
+
+    #three-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #orb-ui {
+      position: relative;
+      z-index: 2;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    #jarvis-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 6px;
+      color: var(--text-mid);
+      text-transform: uppercase;
+      margin-bottom: 240px;
+    }
+
+    #state-label {
+      margin-top: 240px;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: var(--text-mid);
+      transition: color 0.5s;
+    }
+    #state-label.listening { color: var(--accent1); }
+    #state-label.generating { color: var(--amber); }
+    #state-label.speaking { color: white; }
+
+    #transcript-box {
+      position: absolute;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 600px;
+      width: 90%;
+      z-index: 3;
+    }
+
+    #transcript-text {
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-hi);
+      min-height: 54px;
+      max-height: 160px;
+      overflow-y: auto;
+      transition: opacity 0.3s;
+    }
+    #transcript-text:empty::before {
+      content: "Dì qualcosa...";
+      color: var(--text-lo);
+      font-style: italic;
+    }
+
+    /* Scrollbar */
+    #transcript-text::-webkit-scrollbar { width: 4px; }
+    #transcript-text::-webkit-scrollbar-track { background: transparent; }
+    #transcript-text::-webkit-scrollbar-thumb { background: var(--text-lo); border-radius: 4px; }
+
+    /* ===== STATUS ROW ===== */
+    #status-row {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      z-index: 5;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 5px 12px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-mid);
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-lo);
+    }
+    .status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.offline { background: var(--red); }
+
+    /* ===== KNOWLEDGE PANEL ===== */
+    #knowledge-view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-deep);
+      transition: opacity 0.4s, transform 0.4s;
+    }
+    #knowledge-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.98); }
+
+    .kp-header {
+      padding: 24px 32px 0;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .kp-header h1 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--text-hi);
+      margin-bottom: 18px;
+    }
+
+    .kp-tabs {
+      display: flex;
+      gap: 0;
+    }
+    .kp-tab {
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-mid);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .kp-tab.active { color: var(--accent1); border-bottom-color: var(--accent1); }
+    .kp-tab:hover:not(.active) { color: var(--text-hi); }
+
+    .kp-content {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+    }
+
+    /* Tab panes */
+    .kp-pane { display: none; flex: 1; overflow: hidden; }
+    .kp-pane.active { display: flex; }
+
+    /* Documents pane */
+    #pane-docs {
+      flex-direction: row;
+      gap: 0;
+    }
+
+    .docs-left {
+      width: 320px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      gap: 16px;
+    }
+
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s;
+      flex-shrink: 0;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent1);
+      background: rgba(0,212,255,0.05);
+    }
+    .drop-zone svg { width: 36px; height: 36px; stroke: var(--accent2); margin-bottom: 12px; }
+    .drop-zone p { font-size: 13px; color: var(--text-mid); line-height: 1.5; }
+    .drop-zone strong { color: var(--text-hi); }
+
+    #file-input { display: none; }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-lo);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+    }
+
+    .file-list {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .file-list::-webkit-scrollbar { width: 4px; }
+    .file-list::-webkit-scrollbar-thumb { background: var(--text-lo); border-radius: 4px; }
+
+    .file-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      transition: border-color 0.2s;
+    }
+    .file-card:hover { border-color: rgba(255,255,255,0.12); }
+    .file-icon { font-size: 20px; flex-shrink: 0; }
+    .file-info { flex: 1; min-width: 0; }
+    .file-name { font-size: 13px; font-weight: 500; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .file-meta { font-size: 11px; color: var(--text-lo); margin-top: 3px; }
+    .file-delete {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-lo);
+      font-size: 16px;
+      transition: color 0.2s;
+      padding: 2px;
+      flex-shrink: 0;
+    }
+    .file-delete:hover { color: var(--red); }
+
+    .empty-state {
+      color: var(--text-lo);
+      font-size: 13px;
+      text-align: center;
+      padding: 24px;
+      font-style: italic;
+    }
+
+    .docs-right {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      gap: 16px;
+    }
+
+    .ingest-progress {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      font-size: 13px;
+      color: var(--text-mid);
+      display: none;
+    }
+    .ingest-progress.visible { display: block; }
+
+    .progress-bar-wrap {
+      height: 4px;
+      background: var(--border);
+      border-radius: 4px;
+      margin-top: 12px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent1), var(--accent2));
+      border-radius: 4px;
+      transition: width 0.3s;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      text-align: center;
+    }
+    .stat-value { font-size: 26px; font-weight: 700; color: var(--accent1); font-family: 'Orbitron', sans-serif; }
+    .stat-label { font-size: 11px; color: var(--text-mid); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+
+    /* Wikipedia pane */
+    #pane-wiki {
+      flex-direction: column;
+      padding: 24px;
+      gap: 16px;
+    }
+
+    .wiki-search-row {
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .input-field {
+      flex: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      color: var(--text-hi);
+      font-family: 'Inter', sans-serif;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-field:focus { border-color: var(--accent1); }
+    .input-field::placeholder { color: var(--text-lo); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent1), var(--accent2));
+      border: none;
+      border-radius: 10px;
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      transition: opacity 0.2s, transform 0.15s;
+      white-space: nowrap;
+    }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    .wiki-status {
+      font-size: 12px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-mid);
+      flex-shrink: 0;
+    }
+
+    .wiki-result {
+      flex: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.75;
+      color: var(--text-hi);
+      white-space: pre-wrap;
+    }
+    .wiki-result::-webkit-scrollbar { width: 4px; }
+    .wiki-result::-webkit-scrollbar-thumb { background: var(--text-lo); border-radius: 4px; }
+    .wiki-result .wiki-placeholder { color: var(--text-lo); font-style: italic; }
+
+    /* ===== TOAST ===== */
+    #toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .toast {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 18px;
+      font-size: 13px;
+      color: var(--text-hi);
+      animation: toast-in 0.3s ease;
+      max-width: 320px;
+    }
+    .toast.success { border-left: 3px solid var(--green); }
+    .toast.error   { border-left: 3px solid var(--red);   }
+    .toast.info    { border-left: 3px solid var(--accent1); }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ===== LOADING OVERLAY ===== */
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--bg-deep);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      transition: opacity 0.6s;
+    }
+    #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+
+    .loading-logo {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 36px;
+      font-weight: 900;
+      background: linear-gradient(135deg, var(--accent1), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 32px;
+      letter-spacing: 6px;
+    }
+
+    .loading-dots {
+      display: flex;
+      gap: 8px;
+    }
+    .loading-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent1);
+      animation: dot-bounce 1.4s infinite ease-in-out;
+    }
+    .loading-dot:nth-child(2) { animation-delay: 0.15s; background: var(--accent2); }
+    .loading-dot:nth-child(3) { animation-delay: 0.3s; background: var(--accent3); }
+    @keyframes dot-bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    .loading-message {
+      margin-top: 20px;
+      font-size: 13px;
+      color: var(--text-mid);
+      letter-spacing: 2px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Title Bar -->
+<div id="title-bar">
+  <div id="window-title">JARVIS LOCAL AI</div>
+  <div id="window-controls">
+    <div class="win-btn" id="win-min">
+      <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </div>
+    <div class="win-btn" id="win-max">
+      <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14"/></svg>
+    </div>
+    <div class="win-btn close" id="win-close">
+      <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </div>
+  </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="loading-logo">JARVIS</div>
+  <div class="loading-dots">
+    <div class="loading-dot"></div>
+    <div class="loading-dot"></div>
+    <div class="loading-dot"></div>
+  </div>
+  <div class="loading-message" id="loading-message">INITIALISING</div>
+</div>
+
+<div id="app">
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="sidebar-logo">J</div>
+
+    <button class="sidebar-btn active" id="btn-orb" aria-label="Main orb view">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>
+      <span class="tooltip">Assistant</span>
+    </button>
+
+    <button class="sidebar-btn" id="btn-knowledge" aria-label="Knowledge manager">
+      <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      <span class="tooltip">Knowledge</span>
+    </button>
+
+    <div class="sidebar-divider"></div>
+
+    <button class="sidebar-btn" id="btn-settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span class="tooltip">Settings</span>
+    </button>
+  </nav>
+
+  <!-- Main content -->
+  <main id="main">
+
+    <!-- Status row -->
+    <div id="status-row">
+      <div class="status-pill">
+        <div class="status-dot" id="dot-ollama"></div>
+        <span>Ollama</span>
+      </div>
+      <div class="status-pill">
+        <div class="status-dot" id="dot-kiwix"></div>
+        <span>Wikipedia</span>
+      </div>
+      <div class="status-pill">
+        <div class="status-dot online" id="dot-ws"></div>
+        <span>Backend</span>
+      </div>
+    </div>
+
+    <!-- ORB VIEW -->
+    <section id="orb-view">
+      <canvas id="three-canvas"></canvas>
+      <div id="orb-ui">
+        <div id="jarvis-title">J A R V I S</div>
+        <div id="state-label">IDLE</div>
+      </div>
+      <div id="transcript-box">
+        <div id="transcript-text"></div>
+      </div>
+    </section>
+
+    <!-- KNOWLEDGE MANAGER VIEW -->
+    <section id="knowledge-view" class="hidden">
+      <div class="kp-header">
+        <h1>Gestione Conoscenza</h1>
+        <div class="kp-tabs">
+          <div class="kp-tab active" data-tab="docs">Documenti</div>
+          <div class="kp-tab" data-tab="wiki">Wikipedia</div>
+        </div>
+      </div>
+
+      <div class="kp-content">
+        <!-- Documents pane -->
+        <div class="kp-pane active" id="pane-docs">
+          <div class="docs-left">
+            <div class="drop-zone" id="drop-zone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <p><strong>Trascina i file qui</strong><br/>o clicca per sfogliare</p>
+              <p style="margin-top:8px;font-size:11px;color:var(--text-lo)">PDF · TXT · DOCX</p>
+            </div>
+            <input type="file" id="file-input" multiple accept=".pdf,.txt,.docx,.doc" />
+
+            <div class="section-title">File Indicizzati</div>
+            <div class="file-list" id="file-list">
+              <div class="empty-state">Nessun documento indicizzato.</div>
+            </div>
+          </div>
+
+          <div class="docs-right">
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-value" id="stat-files">0</div>
+                <div class="stat-label">File</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value" id="stat-chunks">0</div>
+                <div class="stat-label">Frammenti</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value" id="stat-recent">—</div>
+                <div class="stat-label">Ultimo Aggiunto</div>
+              </div>
+            </div>
+
+            <div class="ingest-progress" id="ingest-progress">
+              <div id="ingest-progress-text">Indicizzazione in corso...</div>
+              <div class="progress-bar-wrap">
+                <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Wikipedia pane -->
+        <div class="kp-pane" id="pane-wiki">
+          <div class="wiki-search-row">
+            <input class="input-field" type="text" id="wiki-query" placeholder="Cerca su Wikipedia offline..." autocomplete="off" />
+            <button class="btn-primary" id="wiki-search-btn">Cerca</button>
+          </div>
+          <div class="wiki-status" id="wiki-status">Verifica Kiwix...</div>
+          <div class="wiki-result" id="wiki-result">
+            <span class="wiki-placeholder">I risultati appariranno qui.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<!-- Three.js r128 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="main.js"></script>
+<script src="knowledge-panel.js"></script>
+</body>
+</html>
