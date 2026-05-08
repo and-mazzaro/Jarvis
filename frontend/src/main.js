@@ -18,6 +18,7 @@ const PARTICLE_COUNT = 4000;
 
 // State colour map
 const STATE_COLOUR = {
+  waiting:     new THREE.Color('#0a0a1a'), // AGGIUNTO FASE 3
   idle:        new THREE.Color('#1a3a5c'),
   listening:   new THREE.Color('#00d4ff'),
   transcribing:new THREE.Color('#ffaa00'),
@@ -27,12 +28,13 @@ const STATE_COLOUR = {
 };
 
 const STATE_LABEL_MAP = {
-  idle:        'IN ATTESA',
-  listening:   'IN ASCOLTO',
-  transcribing:'TRASCRIZIONE',
-  retrieving:  'RICERCA',
-  generating:  'IN ELABORAZIONE',
-  speaking:    'PARLO',
+  waiting:     'In ascolto...',          // AGGIUNTO FASE 3
+  idle:        'PRONTO',
+  listening:   'Parla pure, Signore',   // MODIFICATO FASE 3
+  transcribing:'Elaborazione...',       // MODIFICATO FASE 3
+  retrieving:  'Elaborazione...',       // MODIFICATO FASE 3
+  generating:  'Elaborazione...',       // MODIFICATO FASE 3
+  speaking:    '',                       // MODIFICATO FASE 3
 };
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -125,6 +127,14 @@ function animate() {
     let px = bx, py = by, pz = bz;
 
     switch (currentState) {
+      case 'waiting': {
+        // AGGIUNTO FASE 3: Orb piccolo e quasi invisibile
+        const breathe = 0.6 + 0.02 * Math.sin(t * 0.2 + rnd * Math.PI * 2);
+        px = bx * breathe;
+        py = by * breathe;
+        pz = bz * breathe;
+        break;
+      }
       case 'idle': {
         const breathe = 1.0 + 0.06 * Math.sin(t * 0.4 + rnd * Math.PI * 2);
         px = bx * breathe;
@@ -167,9 +177,12 @@ function animate() {
   geometry.attributes.position.needsUpdate = true;
 
   // Organically complex rotation
-  const rotFactor = currentState === 'idle' ? 0.05 : 0.2;
+  const rotFactor = currentState === 'waiting' ? 0.01 : (currentState === 'idle' ? 0.05 : 0.2); // MODIFICATO FASE 3
   particles.rotation.y += rotFactor * 0.016 + Math.sin(t * 0.2) * 0.001;
   particles.rotation.x += rotFactor * 0.008 + Math.cos(t * 0.3) * 0.001;
+  
+  // Lerp opacity for waiting state
+  material.opacity = lerp(material.opacity, currentState === 'waiting' ? 0.4 : 0.85, 0.04); // AGGIUNTO FASE 3
 
   renderer.render(scene, camera);
 }
@@ -227,6 +240,7 @@ function applyState(state, msg = {}) {
   const label = STATE_LABEL_MAP[state] || state.toUpperCase();
   stateLabel.textContent = label;
   stateLabel.className   = '';
+  if (state === 'waiting')    stateLabel.classList.add('waiting');   // AGGIUNTO FASE 3
   if (state === 'listening')  stateLabel.classList.add('listening');
   if (state === 'generating') stateLabel.classList.add('generating');
   if (state === 'speaking')   stateLabel.classList.add('speaking');

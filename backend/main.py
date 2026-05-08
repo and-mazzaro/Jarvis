@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 from memory.supabase_memory import JarvisMemory
 from prompt_builder import build_system_prompt
+from wake_word.detector import WakeWordDetector  # AGGIUNTO FASE 3
 
 # ---------------------------------------------------------------------------
 # Resolve project root and add it to sys.path
@@ -64,6 +65,7 @@ import ws_server
 # ---------------------------------------------------------------------------
 _current_state = "idle"
 _loop: asyncio.AbstractEventLoop | None = None
+_wake_word_detected = threading.Event()  # AGGIUNTO FASE 3
 
 
 def _set_state(state: str) -> None:
@@ -72,6 +74,10 @@ def _set_state(state: str) -> None:
     if _loop and not _loop.is_closed():
         asyncio.run_coroutine_threadsafe(ws_server.broadcast(state), _loop)
     logger.info("State → %s", state)
+    
+    # Reset event if entering waiting state
+    if state == "waiting":
+        _wake_word_detected.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -85,40 +91,56 @@ def voice_loop(
     llm: OllamaClient,
     synthesizer: Synthesizer,
     memory: JarvisMemory,
+    wake_detector: WakeWordDetector = None,  # AGGIUNTO FASE 3
 ) -> None:
     logger.info("Voice loop started.")
     while True:
         try:
-            _set_state("idle")
+            # AGGIUNTO FASE 3: Gestione Wake Word
+            if CONFIG.get("wake_word", {}).get("enabled", False):
+                _set_state("waiting")
+                # Blocca finché non viene rilevata la wake word
+                _wake_word_detected.wait()
+                
+                # Mette in pausa il detector per liberare il microfono (AGGIUNTO)
+                if wake_detector:
+                    wake_detector.pause()
+                
+                _set_state("listening")
+            else:
+                _set_state("listening")
 
             # 1. Listen
-            _set_state("listening")
+            logger.info("[VoiceLoop] Whisper in ascolto...")
             query = transcriber.listen_and_transcribe()
+            
             if not query.strip():
+                logger.info("[VoiceLoop] Nessun comando rilevato (silenzio o trascrizione vuota).")
                 continue
 
             # 2. Transcribed — retrieve context
             _set_state("transcribing")
-            logger.info("Query: %r", query)
+            logger.info(f"[VoiceLoop] Query trascritta: {query}")
 
             _set_state("retrieving")
-            # AGGIUNTO FASE 2: RAG asincrono in parallelo
+            # AGGIUNTO FASE 2: RAG asincrono in parallelo (OTTIMIZZATO)
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future_rag = executor.submit(retriever.build_context, query)
                 future_wiki = executor.submit(kiwix.search, query) if kiwix.is_alive() else None
                 
                 try:
-                    rag_context, used_rag = future_rag.result(timeout=2.0)
-                except Exception as e:
-                    logger.warning("RAG timeout o errore: %s", e)
+                    # Timeout ridotto a 1.2s per massimizzare la reattività
+                    rag_context, used_rag = future_rag.result(timeout=1.2)
+                except Exception:
                     rag_context, used_rag = "", False
                 
                 wiki_text = ""
                 if future_wiki:
                     try:
-                        wiki_text = future_wiki.result(timeout=2.0)
-                    except Exception as e:
-                        logger.warning("Kiwix timeout o errore: %s", e)
+                        # Timeout ridotto a 1.2s
+                        wiki_text = future_wiki.result(timeout=1.2)
+                    except Exception:
+                        pass
 
             context_parts: list[str] = []
             if used_rag:
@@ -186,6 +208,10 @@ def voice_loop(
             # 4. Wait for all sentences to be spoken before going back to idle/listening
             synthesizer.wait_until_done()
             logger.info("TTS playback done.")
+            
+            # Riattiva il monitoraggio della wake word (AGGIUNTO)
+            if wake_detector:
+                wake_detector.resume()
 
 
         except KeyboardInterrupt:
@@ -230,9 +256,25 @@ async def main() -> None:
             logger.debug("Errore pre-warm LLM: %s", e)
     threading.Thread(target=prewarm_llm, args=(llm,), daemon=True).start()
 
-    # AGGIUNTO FASE 2: Signal Handling
+    # AGGIUNTO FASE 3: Callback Wake Word
+    def on_wake_word_detected():
+        if _current_state == "waiting":
+            _wake_word_detected.set()
+
+    # AGGIUNTO FASE 3: Inizializzazione Wake Word
+    wake_detector = None
+    if CONFIG.get("wake_word", {}).get("enabled", False):
+        wake_detector = WakeWordDetector(
+            config=CONFIG["wake_word"],
+            on_detected=on_wake_word_detected
+        )
+        wake_detector.start()
+
+    # AGGIUNTO FASE 2: Signal Handling (Aggiornato FASE 3)
     def on_shutdown(sig, frame):
         logger.info("Jarvis: chiusura in corso, salvo la sessione...")
+        if wake_detector:
+            wake_detector.stop()
         memory.end_session(llm)
         sys.exit(0)
 
@@ -242,7 +284,7 @@ async def main() -> None:
     # Start voice loop in background thread
     vl_thread = threading.Thread(
         target=voice_loop,
-        args=(transcriber, retriever, kiwix, llm, synthesizer, memory),
+        args=(transcriber, retriever, kiwix, llm, synthesizer, memory, wake_detector),
         daemon=True,
     )
     vl_thread.start()

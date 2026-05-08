@@ -64,6 +64,10 @@ if errorlevel 1 (
 )
 echo       Dependencies installed.
 echo.
+echo Download modello wake word...
+python -c "import openwakeword; openwakeword.utils.download_models(['hey_jarvis'])"
+echo Modello wake word scaricato.
+echo.
 
 :: ── Pull Ollama model ──────────────────────────────────────────
 echo [4/5] Pulling Ollama model (mistral:7b-instruct)...

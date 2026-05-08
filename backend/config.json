@@ -45,5 +45,13 @@
   "server": {
     "ws_port": 8765,
     "http_port": 3000
+  },
+  "wake_word": {
+    "enabled": true,
+    "model": "hey_jarvis",
+    "threshold": 0.5,
+    "vad_threshold": 0.3,
+    "cooldown_seconds": 2.0,
+    "chunk_size": 1280
   }
 }

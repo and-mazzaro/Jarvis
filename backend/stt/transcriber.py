@@ -4,6 +4,7 @@ Speech-to-Text pipeline:
 """
 import collections
 import logging
+import time
 from typing import Optional
 
 import numpy as np
@@ -65,22 +66,30 @@ class Transcriber:
     def _capture_speech(self) -> bytes:
         """
         Open the default microphone, detect speech via VAD, and return the
-        raw PCM bytes of a single utterance.
+        raw PCM bytes of a single utterance. Added 5s timeout if no speech is detected.
         """
         pa = pyaudio.PyAudio()
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=FRAME_SIZE,
-        )
+        try:
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                input=True,
+                frames_per_buffer=FRAME_SIZE,
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura microfono in Whisper: {e}")
+            pa.terminate()
+            return b""
 
-        logger.info("Listening …")
+        logger.info("Whisper sta ascoltando...")
         num_silence_frames = max(1, int(self.silence_threshold_ms / FRAME_DURATION_MS))
         ring_buffer: collections.deque = collections.deque(maxlen=num_silence_frames)
         triggered = False
         voiced_frames: list[bytes] = []
+        
+        start_time = time.time()
+        timeout = 3.0 # Se non parla entro 3s, chiude
 
         try:
             while True:
@@ -89,20 +98,25 @@ class Transcriber:
 
                 if not triggered:
                     ring_buffer.append((frame, is_speech))
-                    # >= 90% of the ring buffer is voiced → start recording
                     num_voiced = sum(1 for _, s in ring_buffer if s)
-                    if num_voiced > 0.9 * ring_buffer.maxlen:
+                    
+                    # Più sensibile: basta il 60% di frame parlati per attivare (era 90%)
+                    if num_voiced > 0.6 * ring_buffer.maxlen:
                         triggered = True
-                        logger.debug("Speech detected — recording …")
+                        logger.debug("Voce rilevata — registrazione...")
                         voiced_frames.extend(f for f, _ in ring_buffer)
                         ring_buffer.clear()
+                    
+                    # Timeout se non parla nessuno
+                    if time.time() - start_time > timeout:
+                        logger.info("Timeout: nessuna voce rilevata dopo il risveglio.")
+                        break
                 else:
                     voiced_frames.append(frame)
                     ring_buffer.append((frame, is_speech))
-                    # >= 90% of the ring buffer is silence → stop recording
                     num_unvoiced = sum(1 for _, s in ring_buffer if not s)
                     if num_unvoiced > 0.9 * ring_buffer.maxlen:
-                        logger.debug("Silence detected — ending capture.")
+                        logger.debug("Silenzio rilevato — fine registrazione.")
                         break
         finally:
             stream.stop_stream()
