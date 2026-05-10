@@ -57,6 +57,7 @@ from tts.synthesizer import Synthesizer
 from rag.ingestor import Ingestor
 from rag.retriever import Retriever
 from knowledge.kiwix_client import KiwixClient
+from knowledge.web_searcher import WebSearcher # AGGIUNTO
 import ws_server
 
 
@@ -92,6 +93,7 @@ def voice_loop(
     synthesizer: Synthesizer,
     memory: JarvisMemory,
     wake_detector: WakeWordDetector = None,  # AGGIUNTO FASE 3
+    web_searcher: WebSearcher = None,         # AGGIUNTO
 ) -> None:
     logger.info("Voice loop started.")
     while True:
@@ -101,6 +103,7 @@ def voice_loop(
                 _set_state("waiting")
                 # Blocca finché non viene rilevata la wake word
                 _wake_word_detected.wait()
+                _wake_word_detected.clear() # Reset immediato
                 
                 # Mette in pausa il detector per liberare il microfono (AGGIUNTO)
                 if wake_detector:
@@ -118,29 +121,51 @@ def voice_loop(
                 logger.info("[VoiceLoop] Nessun comando rilevato (silenzio o trascrizione vuota).")
                 continue
 
-            # 2. Transcribed — retrieve context
+            # 2. Transcribed — check if we need retrieval
             _set_state("transcribing")
             logger.info(f"[VoiceLoop] Query trascritta: {query}")
 
-            _set_state("retrieving")
-            # AGGIUNTO FASE 2: RAG asincrono in parallelo (OTTIMIZZATO)
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future_rag = executor.submit(retriever.build_context, query)
-                future_wiki = executor.submit(kiwix.search, query) if kiwix.is_alive() else None
-                
-                try:
-                    # Timeout ridotto a 1.2s per massimizzare la reattività
-                    rag_context, used_rag = future_rag.result(timeout=1.2)
-                except Exception:
-                    rag_context, used_rag = "", False
-                
+            # ANALISI QUERY (Novità per velocità e ricerca)
+            is_short_query = len(query.split()) <= 3
+            is_web_search = "cerca online" in query.lower()
+            
+            if is_web_search and web_searcher:
+                _set_state("retrieving")
+                logger.info("[VoiceLoop] Richiesta ricerca online rilevata.")
+                web_results = web_searcher.search(query)
+                if web_results:
+                    wiki_text = f"[Risultati dal Web]\n{web_results}"
+                else:
+                    wiki_text = "[Sistema] Nessun risultato trovato online."
+                rag_context, used_rag = "", False
+                _set_state("generating")
+            # SALTO RETRIEVAL PER FRASI BREVI
+            elif is_short_query or any(word in query.lower() for word in ["ciao", "grazie", "chi sei", "scusa"]):
+                logger.info("[VoiceLoop] Salto retrieval per query semplice/breve.")
+                rag_context, used_rag = "", False
                 wiki_text = ""
-                if future_wiki:
+                _set_state("generating")
+            else:
+                _set_state("retrieving")
+                # AGGIUNTO FASE 2: RAG asincrono in parallelo (OTTIMIZZATO)
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future_rag = executor.submit(retriever.build_context, query)
+                    future_wiki = executor.submit(kiwix.search, query) if kiwix.is_alive() else None
+                    
                     try:
-                        # Timeout ridotto a 1.2s
-                        wiki_text = future_wiki.result(timeout=1.2)
+                        # Timeout ridotto ulteriormente a 1.0s
+                        rag_context, used_rag = future_rag.result(timeout=1.0)
                     except Exception:
-                        pass
+                        rag_context, used_rag = "", False
+                    
+                    wiki_text = ""
+                    if future_wiki:
+                        try:
+                            # Timeout ridotto ulteriormente a 1.0s
+                            wiki_text = future_wiki.result(timeout=1.0)
+                        except Exception:
+                            pass
+                _set_state("generating")
 
             context_parts: list[str] = []
             if used_rag:
@@ -240,6 +265,7 @@ async def main() -> None:
     ingestor = Ingestor(CONFIG["rag"], CHROMA_PATH)
     retriever = Retriever(CONFIG["rag"], CHROMA_PATH)
     kiwix = KiwixClient(CONFIG["kiwix"])
+    web_searcher = WebSearcher() # AGGIUNTO
 
     synthesizer = Synthesizer(CONFIG["tts"], PROJECT_ROOT)
     transcriber = Transcriber(CONFIG["stt"])
@@ -284,7 +310,7 @@ async def main() -> None:
     # Start voice loop in background thread
     vl_thread = threading.Thread(
         target=voice_loop,
-        args=(transcriber, retriever, kiwix, llm, synthesizer, memory, wake_detector),
+        args=(transcriber, retriever, kiwix, llm, synthesizer, memory, wake_detector, web_searcher),
         daemon=True,
     )
     vl_thread.start()

@@ -15,3 +15,5 @@ numpy<2.0.0,>=1.22.4
 supabase>=2.10.0
 python-dotenv==1.0.1
 openwakeword==0.6.0
+duckduckgo_search>=5.0.0
+brotli

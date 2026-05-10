@@ -85,8 +85,13 @@ class WakeWordDetector:
         if self._listen_thread:
             self._listen_thread.join(timeout=1.0)
         self._close_stream()
-        self.audio.terminate()
-        logger.info("Rilevatore wake word disattivato.")
+        if self.audio:
+            try:
+                self.audio.terminate()
+            except Exception:
+                pass
+            self.audio = None
+        logger.info("Rilevatore wake word fermato.")
 
     def _close_stream(self):
         if self.stream:
