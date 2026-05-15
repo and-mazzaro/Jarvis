@@ -21,12 +21,28 @@ class JarvisMemory:
         
         self.profile = {}
         self.recent_messages = []
-        self._load_initial_data()
-        
+        self._data_ready = threading.Event()
+
+        # Carica dati in background — non blocca l'avvio
+        threading.Thread(target=self._load_initial_data_async, daemon=True).start()
+
         # Coda per scrittura asincrona
         self._write_queue = queue.Queue()
         self._writer_thread = threading.Thread(target=self._async_writer, daemon=True)
         self._writer_thread.start()
+
+    def _load_initial_data_async(self):
+        """Carica profilo e messaggi in background senza bloccare l'avvio."""
+        self._load_initial_data()
+        self._data_ready.set()
+        print("[Memory] Dati caricati in background.")
+
+    def wait_ready(self, timeout: float = 5.0):
+        """
+        Attende che i dati siano caricati. Chiamare prima di build_system_prompt()
+        se si vuole avere il profilo completo. Timeout di sicurezza: 5 secondi.
+        """
+        self._data_ready.wait(timeout=timeout)
 
     def _load_initial_data(self):
         try:

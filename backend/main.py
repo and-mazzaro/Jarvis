@@ -272,6 +272,8 @@ async def main() -> None:
 
     # AGGIUNTO FASE 2: Inizializzazione Memoria
     memory = JarvisMemory()
+    # Aspetta max 3s che Supabase carichi — poi parte comunque
+    memory.wait_ready(timeout=3.0)
     
     # AGGIUNTO FASE 2: Pre-warming LLM
     def prewarm_llm(ollama_client):

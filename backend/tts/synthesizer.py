@@ -42,13 +42,51 @@ class Synthesizer:
         self.playback_thread.start()
 
     def _playback_loop(self):
+        """
+        Pipeline sovrapposta: mentre sounddevice riproduce la frase N,
+        un thread separato sintetizza già la frase N+1.
+        """
+        pre_synthesis_queue = queue.Queue(maxsize=2)
+
+        def synthesizer_worker():
+            """Converte testo → audio in anticipo."""
+            while True:
+                item = self.audio_queue.get()
+                if item is None:
+                    pre_synthesis_queue.put(None)
+                    break
+                text, on_start, on_done = item
+                try:
+                    samples, sample_rate = self._kokoro.create(
+                        text,
+                        voice=self.voice_name,
+                        speed=self.speed,
+                        lang=self.lang,
+                    )
+                except Exception as e:
+                    logger.error("Errore sintesi: %s", e)
+                    samples, sample_rate = None, self.sample_rate
+                pre_synthesis_queue.put((samples, sample_rate, on_start, on_done))
+                self.audio_queue.task_done()
+
+        synth_thread = threading.Thread(target=synthesizer_worker, daemon=True)
+        synth_thread.start()
+
         while True:
-            item = self.audio_queue.get()
+            item = pre_synthesis_queue.get()
             if item is None:
                 break
-            text, on_start, on_done = item
-            self.speak(text, on_start, on_done)
-            self.audio_queue.task_done()
+            samples, sample_rate, on_start, on_done = item
+            if on_start:
+                on_start()
+            if samples is not None and len(samples) > 0:
+                try:
+                    sd.play(samples, samplerate=sample_rate)
+                    sd.wait()
+                except Exception as e:
+                    logger.error("Errore riproduzione: %s", e)
+            if on_done:
+                on_done()
 
     def enqueue(self, text: str, on_start: Optional[Callable] = None, on_done: Optional[Callable] = None):
         """Add text to the playback queue."""
