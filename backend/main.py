@@ -16,6 +16,7 @@ import threading
 import signal
 import concurrent.futures
 import re
+import time
 from pathlib import Path
 from memory.supabase_memory import JarvisMemory
 from prompt_builder import build_system_prompt
@@ -84,6 +85,150 @@ def _set_state(state: str) -> None:
 # ---------------------------------------------------------------------------
 # Voice loop (runs in a background thread)
 # ---------------------------------------------------------------------------
+# Configurazione conversazione multi-turno
+# ---------------------------------------------------------------------------
+FOLLOW_UP_WINDOW_S = 8.0     # Secondi di attesa per un follow-up dopo la risposta
+POST_TTS_PAUSE_S   = 1.0     # Pausa dopo che Jarvis finisce di parlare (evita eco TTS)
+
+
+def _retrieve_context(query, retriever, kiwix, web_searcher):
+    """Esegue il retrieval RAG/Wikipedia/Web e ritorna (context_str | None)."""
+    is_short_query = len(query.split()) <= 3
+    is_web_search = "cerca online" in query.lower()
+
+    if is_web_search and web_searcher:
+        logger.info("[VoiceLoop] Richiesta ricerca online rilevata.")
+        web_results = web_searcher.search(query)
+        if web_results:
+            return f"[Risultati dal Web]\n{web_results}"
+        return "[Sistema] Nessun risultato trovato online."
+
+    if is_short_query or any(w in query.lower() for w in ["ciao", "grazie", "chi sei", "scusa", "buongiorno", "buonasera"]):
+        logger.info("[VoiceLoop] Salto retrieval per query semplice/breve.")
+        return None
+
+    rag_context, used_rag = "", False
+    wiki_text = ""
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_rag = executor.submit(retriever.build_context, query)
+        future_wiki = executor.submit(kiwix.search, query) if kiwix.is_alive() else None
+        try:
+            rag_context, used_rag = future_rag.result(timeout=1.5)
+        except Exception:
+            rag_context, used_rag = "", False
+        if future_wiki:
+            try:
+                wiki_text = future_wiki.result(timeout=1.5)
+            except Exception:
+                pass
+
+    parts = []
+    if used_rag:
+        parts.append(rag_context)
+    if wiki_text:
+        parts.append(f"[Wikipedia excerpt]\n{wiki_text}")
+    return "\n\n".join(parts) if parts else None
+
+
+def _generate_and_speak(query, context, llm, synthesizer, memory):
+    """
+    Genera la risposta in streaming, la manda al TTS frase per frase,
+    e aspetta che tutta la riproduzione audio sia terminata.
+    Usa una logica di split frase migliorata che non tronca mai a metà.
+    """
+    system_prompt = build_system_prompt(memory)
+    history = memory.get_context_messages()
+
+    response_tokens: list[str] = []
+    sentence_buffer = ""
+    first_sentence = True
+
+    for token in llm.generate_stream(query, context, system_prompt=system_prompt, history=history):
+        response_tokens.append(token)
+        sentence_buffer += token
+
+        # Split su fine frase COMPLETA: punto/interrogativo/esclamativo
+        # seguito da spazio/newline. Assicura che non tronchi mai a metà parola.
+        while True:
+            match = re.search(r'[.?!:;]+(?:\s|$)', sentence_buffer)
+            if not match:
+                break
+            end_pos = match.end()
+            sentence = sentence_buffer[:end_pos].strip()
+            sentence_buffer = sentence_buffer[end_pos:]
+
+            if sentence and len(sentence) > 5:  # Ignora frammenti troppo corti
+                if first_sentence:
+                    synthesizer.enqueue(sentence, on_start=lambda: _set_state("speaking"))
+                    first_sentence = False
+                else:
+                    synthesizer.enqueue(sentence)
+
+        # Stream testo parziale alla UI
+        partial = "".join(response_tokens)
+        if _loop and not _loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                ws_server.broadcast("generating", {"partial": partial}),
+                _loop,
+            )
+
+    # Accoda il testo rimanente (ultima frase, anche senza punto finale)
+    if sentence_buffer.strip():
+        if first_sentence:
+            synthesizer.enqueue(sentence_buffer.strip(), on_start=lambda: _set_state("speaking"))
+        else:
+            synthesizer.enqueue(sentence_buffer.strip())
+
+    response_text = "".join(response_tokens).strip()
+    memory.add_message("assistant", response_text)
+
+    logger.info("Response complete. Waiting for TTS playback ...")
+    synthesizer.wait_until_done()
+    logger.info("TTS playback done.")
+
+    return response_text
+
+
+def _extract_user_profile(query, response, memory):
+    """
+    Analizza la query dell'utente per estrarre informazioni di profilo.
+    Aggiorna il profilo utente in modo automatico e non intrusivo.
+    """
+    q_lower = query.lower()
+
+    # Pattern di profilazione: coppie (pattern_keywords, profile_key)
+    profile_patterns = [
+        (["mi chiamo", "il mio nome è", "sono"], "nome"),
+        (["abito a", "vivo a", "sono di", "la mia città"], "città"),
+        (["lavoro come", "faccio il", "sono un", "sono una", "di professione"], "professione"),
+        (["ho ... anni", "la mia età"], "età"),
+        (["mi piace", "mi piacciono", "adoro", "amo"], "interessi"),
+        (["studio", "frequento", "la mia scuola", "università"], "studi"),
+    ]
+
+    for keywords, profile_key in profile_patterns:
+        for kw in keywords:
+            if kw in q_lower:
+                # Estrai il valore dopo la keyword
+                idx = q_lower.find(kw)
+                value_part = query[idx + len(kw):].strip().rstrip(".,!?")
+                if value_part and len(value_part) > 1:
+                    # Per "interessi" appendi invece di sovrascrivere
+                    if profile_key == "interessi":
+                        existing = memory.profile.get("interessi", "")
+                        if value_part.lower() not in existing.lower():
+                            new_val = f"{existing}, {value_part}" if existing else value_part
+                            memory.update_profile("interessi", new_val)
+                            logger.info("[Profile] Aggiunto interesse: %s", value_part)
+                    else:
+                        memory.update_profile(profile_key, value_part)
+                        logger.info("[Profile] %s → %s", profile_key, value_part)
+                break  # Un solo match per pattern
+
+
+# ---------------------------------------------------------------------------
+# Voice loop (runs in a background thread)
+# ---------------------------------------------------------------------------
 
 def voice_loop(
     transcriber: Transcriber,
@@ -92,158 +237,97 @@ def voice_loop(
     llm: OllamaClient,
     synthesizer: Synthesizer,
     memory: JarvisMemory,
-    wake_detector: WakeWordDetector = None,  # AGGIUNTO FASE 3
-    web_searcher: WebSearcher = None,         # AGGIUNTO
+    wake_detector: WakeWordDetector = None,
+    web_searcher: WebSearcher = None,
 ) -> None:
     logger.info("Voice loop started.")
+    use_wake_word = CONFIG.get("wake_word", {}).get("enabled", False)
+
     while True:
         try:
-            # AGGIUNTO FASE 3: Gestione Wake Word
-            if CONFIG.get("wake_word", {}).get("enabled", False):
+            # ── Fase 1: Attendi wake word (se abilitata) ──
+            if use_wake_word:
+                # Assicurati che il mic STT sia chiuso (wake word lo usa)
+                transcriber.close_mic()
                 _set_state("waiting")
-                # Blocca finché non viene rilevata la wake word
                 _wake_word_detected.wait()
-                _wake_word_detected.clear() # Reset immediato
-                
-                # Mette in pausa il detector per liberare il microfono (AGGIUNTO)
+                _wake_word_detected.clear()
+                # Pausa il wake word detector → rilascia il suo mic
                 if wake_detector:
                     wake_detector.pause()
-                
+                # Piccola pausa per dare tempo a Windows di rilasciare il device audio
+                time.sleep(0.3)
+
+            # ── Fase 2: Apri mic per il transcriber ──
+            transcriber.open_mic()
+
+            # ── Fase 3: Ciclo di conversazione multi-turno ──
+            in_conversation = True
+            while in_conversation:
                 _set_state("listening")
-            else:
-                _set_state("listening")
+                logger.info("[VoiceLoop] Whisper in ascolto...")
+                query = transcriber.listen_and_transcribe()
 
-            # 1. Listen
-            logger.info("[VoiceLoop] Whisper in ascolto...")
-            query = transcriber.listen_and_transcribe()
-            
-            if not query.strip():
-                logger.info("[VoiceLoop] Nessun comando rilevato (silenzio o trascrizione vuota).")
-                continue
+                if not query.strip():
+                    logger.info("[VoiceLoop] Silenzio — fine conversazione multi-turno.")
+                    in_conversation = False
+                    break
 
-            # 2. Transcribed — check if we need retrieval
-            _set_state("transcribing")
-            logger.info(f"[VoiceLoop] Query trascritta: {query}")
+                _set_state("transcribing")
+                logger.info("[VoiceLoop] Query trascritta: %s", query)
 
-            # ANALISI QUERY (Novità per velocità e ricerca)
-            is_short_query = len(query.split()) <= 3
-            is_web_search = "cerca online" in query.lower()
-            
-            if is_web_search and web_searcher:
+                # Salva messaggio utente
+                memory.add_message("user", query)
+
+                # Retrieval
                 _set_state("retrieving")
-                logger.info("[VoiceLoop] Richiesta ricerca online rilevata.")
-                web_results = web_searcher.search(query)
-                if web_results:
-                    wiki_text = f"[Risultati dal Web]\n{web_results}"
-                else:
-                    wiki_text = "[Sistema] Nessun risultato trovato online."
-                rag_context, used_rag = "", False
+                context = _retrieve_context(query, retriever, kiwix, web_searcher)
+
+                # Generazione + riproduzione
                 _set_state("generating")
-            # SALTO RETRIEVAL PER FRASI BREVI
-            elif is_short_query or any(word in query.lower() for word in ["ciao", "grazie", "chi sei", "scusa"]):
-                logger.info("[VoiceLoop] Salto retrieval per query semplice/breve.")
-                rag_context, used_rag = "", False
-                wiki_text = ""
-                _set_state("generating")
-            else:
-                _set_state("retrieving")
-                # AGGIUNTO FASE 2: RAG asincrono in parallelo (OTTIMIZZATO)
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future_rag = executor.submit(retriever.build_context, query)
-                    future_wiki = executor.submit(kiwix.search, query) if kiwix.is_alive() else None
-                    
-                    try:
-                        # Timeout ridotto ulteriormente a 1.0s
-                        rag_context, used_rag = future_rag.result(timeout=1.0)
-                    except Exception:
-                        rag_context, used_rag = "", False
-                    
-                    wiki_text = ""
-                    if future_wiki:
-                        try:
-                            # Timeout ridotto ulteriormente a 1.0s
-                            wiki_text = future_wiki.result(timeout=1.0)
-                        except Exception:
-                            pass
-                _set_state("generating")
+                response_text = _generate_and_speak(query, context, llm, synthesizer, memory)
 
-            context_parts: list[str] = []
-            if used_rag:
-                context_parts.append(rag_context)
-            if wiki_text:
-                context_parts.append(f"[Wikipedia excerpt]\n{wiki_text}")
+                # Profilazione automatica dell'utente
+                _extract_user_profile(query, response_text, memory)
 
-            context = "\n\n".join(context_parts) if context_parts else None
+                # ── Pausa post-TTS ──
+                time.sleep(POST_TTS_PAUSE_S)
 
-            # 3. Generate
-            _set_state("generating")
-            
-            # AGGIUNTO FASE 2: Memoria e Prompt Dinamico
-            memory.add_message("user", query)
-            system_prompt = build_system_prompt(memory)
-            history = memory.get_context_messages()
-            
-            response_tokens: list[str] = []
-            sentence_buffer = ""
-            first_sentence = True
-            
-            
-            # Passiamo history e system_prompt (MODIFICATO FASE 2)
-            for token in llm.generate_stream(query, context, system_prompt=system_prompt, history=history):
-                response_tokens.append(token)
-                sentence_buffer += token
-                
-                # Check for sentence endings (. ? ! followed by space or newline)
-                # We use a regex to find the first occurrence and split
-                match = re.search(r'([.?!]+)(\s+)', sentence_buffer)
-                if match:
-                    end_pos = match.end()
-                    sentence = sentence_buffer[:end_pos].strip()
-                    sentence_buffer = sentence_buffer[end_pos:]
-                    
-                    if sentence:
-                        if first_sentence:
-                            # The first sentence triggers the "speaking" state in UI
-                            synthesizer.enqueue(sentence, on_start=lambda: _set_state("speaking"))
-                            first_sentence = False
-                        else:
-                            synthesizer.enqueue(sentence)
+                # ── Finestra di follow-up ──
+                if use_wake_word:
+                    logger.info("[VoiceLoop] Finestra follow-up: %.1fs per continuare...", FOLLOW_UP_WINDOW_S)
+                    _set_state("listening")
+                    query_follow = transcriber.listen_and_transcribe()
+                    if query_follow.strip():
+                        logger.info("[VoiceLoop] Follow-up rilevato: %s", query_follow)
+                        memory.add_message("user", query_follow)
+                        _set_state("retrieving")
+                        context = _retrieve_context(query_follow, retriever, kiwix, web_searcher)
+                        _set_state("generating")
+                        response_text = _generate_and_speak(query_follow, context, llm, synthesizer, memory)
+                        _extract_user_profile(query_follow, response_text, memory)
+                        time.sleep(POST_TTS_PAUSE_S)
+                        continue
+                    else:
+                        logger.info("[VoiceLoop] Nessun follow-up — fine conversazione.")
+                        in_conversation = False
 
-                # Stream partial text to UI
-                partial = "".join(response_tokens)
-                if _loop and not _loop.is_closed():
-                    asyncio.run_coroutine_threadsafe(
-                        ws_server.broadcast("generating", {"partial": partial}),
-                        _loop,
-                    )
-
-            # Enqueue any remaining text
-            if sentence_buffer.strip():
-                if first_sentence:
-                    synthesizer.enqueue(sentence_buffer.strip(), on_start=lambda: _set_state("speaking"))
-                else:
-                    synthesizer.enqueue(sentence_buffer.strip())
-
-            response_text = "".join(response_tokens).strip()
-            # AGGIUNTO FASE 2: Salva risposta assistente
-            memory.add_message("assistant", response_text)
-            
-            logger.info("Response complete. Waiting for TTS playback ...")
-
-            # 4. Wait for all sentences to be spoken before going back to idle/listening
-            synthesizer.wait_until_done()
-            logger.info("TTS playback done.")
-            
-            # Riattiva il monitoraggio della wake word (AGGIUNTO)
+            # ── Fase 4: Rilascia mic e riattiva wake word ──
+            transcriber.close_mic()
+            time.sleep(0.3)  # Attendi rilascio device Windows
             if wake_detector:
                 wake_detector.resume()
-
 
         except KeyboardInterrupt:
             logger.info("Voice loop interrupted.")
             break
         except Exception as exc:
             logger.error("Voice loop error: %s", exc, exc_info=True)
+            # In caso di errore, assicurati di rilasciare il mic
+            try:
+                transcriber.close_mic()
+            except Exception:
+                pass
             _set_state("idle")
 
 

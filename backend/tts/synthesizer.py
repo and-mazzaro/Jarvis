@@ -38,6 +38,11 @@ class Synthesizer:
 
         # Background playback queue
         self.audio_queue = queue.Queue()
+        # Event segnalato quando l'ultimo chunk audio ha finito di suonare
+        self._playback_done = threading.Event()
+        self._playback_done.set()  # parte come "done" (niente in riproduzione)
+        self._pending_count = 0
+        self._pending_lock = threading.Lock()
         self.playback_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self.playback_thread.start()
 
@@ -54,6 +59,7 @@ class Synthesizer:
                 item = self.audio_queue.get()
                 if item is None:
                     pre_synthesis_queue.put(None)
+                    self.audio_queue.task_done()
                     break
                 text, on_start, on_done = item
                 try:
@@ -75,6 +81,10 @@ class Synthesizer:
         while True:
             item = pre_synthesis_queue.get()
             if item is None:
+                # Segnala che non c'è più niente in riproduzione
+                with self._pending_lock:
+                    self._pending_count = 0
+                self._playback_done.set()
                 break
             samples, sample_rate, on_start, on_done = item
             if on_start:
@@ -82,20 +92,28 @@ class Synthesizer:
             if samples is not None and len(samples) > 0:
                 try:
                     sd.play(samples, samplerate=sample_rate)
-                    sd.wait()
+                    sd.wait()  # Blocca finché l'audio non finisce DAVVERO
                 except Exception as e:
                     logger.error("Errore riproduzione: %s", e)
             if on_done:
                 on_done()
+            # Decrementa contatore; se è l'ultimo, segnala done
+            with self._pending_lock:
+                self._pending_count = max(0, self._pending_count - 1)
+                if self._pending_count == 0:
+                    self._playback_done.set()
 
     def enqueue(self, text: str, on_start: Optional[Callable] = None, on_done: Optional[Callable] = None):
         """Add text to the playback queue."""
         if text.strip():
+            with self._pending_lock:
+                self._pending_count += 1
+                self._playback_done.clear()  # Ci sono chunk in coda
             self.audio_queue.put((text, on_start, on_done))
 
     def wait_until_done(self):
-        """Wait until all items in the queue have been played."""
-        self.audio_queue.join()
+        """Aspetta che TUTTO l'audio (sintesi + riproduzione) sia terminato."""
+        self._playback_done.wait()
 
     def speak(
         self,
