@@ -28,6 +28,7 @@ class WakeWordDetector:
         self.is_running = False
         self.is_paused = False
         self._listen_thread = None
+        self._lock = threading.Lock()
         
         # Inizializza PyAudio
         self.audio = pyaudio.PyAudio()
@@ -35,7 +36,7 @@ class WakeWordDetector:
 
         try:
             # Scarica il modello se non presente
-            logger.info(f"Inizializzazione modello wake word: {self.model_name}")
+            logger.info("Inizializzazione modello wake word: %s", self.model_name)
             openwakeword.utils.download_models([self.model_name])
             
             # Inizializza il modello ONNX
@@ -45,95 +46,149 @@ class WakeWordDetector:
                 vad_threshold=self.vad_threshold
             )
         except Exception as e:
-            logger.error(f"Errore inizializzazione openwakeword: {e}")
+            logger.error("Errore inizializzazione openwakeword: %s", e)
             self.enabled = False
 
     def start(self):
         """Avvia il thread di monitoraggio."""
         if not self.enabled:
             return
-        if self.is_running:
-            return
-
-        self.is_running = True
-        self.is_paused = False
+        with self._lock:
+            if self.is_running:
+                return
+            self.is_running = True
+            self.is_paused = False
         self._listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self._listen_thread.start()
-        logger.info(f"Rilevatore wake word avviato (threshold: {self.threshold})")
+        logger.info("Rilevatore wake word avviato (threshold: %s)", self.threshold)
 
     def pause(self):
         """Mette in pausa e rilascia COMPLETAMENTE le risorse audio."""
-        if self.is_running and not self.is_paused:
-            self.is_paused = True
-            self._close_stream()
-            if self.audio:
-                self.audio.terminate()
-                self.audio = None
-            logger.info("WakeWord rilascia il microfono per Whisper...")
+        with self._lock:
+            if self.is_running and not self.is_paused:
+                self.is_paused = True
+                self._close_stream_unlocked()
+                if self.audio:
+                    try:
+                        self.audio.terminate()
+                    except Exception:
+                        pass
+                    self.audio = None
+                logger.info("WakeWord rilascia il microfono per Whisper...")
 
     def resume(self):
         """Riattiva l'ascolto ricreando l'istanza PyAudio."""
-        if self.is_running and self.is_paused:
-            if not self.audio:
-                self.audio = pyaudio.PyAudio()
-            self.is_paused = False
-            logger.info("WakeWord riprende il monitoraggio.")
+        with self._lock:
+            if self.is_running and self.is_paused:
+                if not self.audio:
+                    try:
+                        self.audio = pyaudio.PyAudio()
+                    except Exception as e:
+                        logger.error("Errore ricreazione PyAudio in resume: %s", e)
+                        return
+                
+                # Reset dello stato accumulato del modello per evitare falsi positivi
+                if hasattr(self, 'model') and self.model:
+                    try:
+                        self.model.reset()
+                        logger.info("Stato del modello openwakeword resettato.")
+                    except Exception as e:
+                        logger.debug("Impossibile resettare il modello: %s", e)
+                
+                self.is_paused = False
+                logger.info("WakeWord riprende il monitoraggio.")
 
     def stop(self):
         """Ferma tutto e pulisce le risorse."""
-        self.is_running = False
+        with self._lock:
+            self.is_running = False
         if self._listen_thread:
             self._listen_thread.join(timeout=1.0)
-        self._close_stream()
-        if self.audio:
-            try:
-                self.audio.terminate()
-            except Exception:
-                pass
-            self.audio = None
+        with self._lock:
+            self._close_stream_unlocked()
+            if self.audio:
+                try:
+                    self.audio.terminate()
+                except Exception:
+                    pass
+                self.audio = None
         logger.info("Rilevatore wake word fermato.")
 
     def _close_stream(self):
+        with self._lock:
+            self._close_stream_unlocked()
+
+    def _close_stream_unlocked(self):
         if self.stream:
             try:
                 self.stream.stop_stream()
                 self.stream.close()
-            except:
+            except Exception:
                 pass
             self.stream = None
 
-    def _open_stream(self):
-        try:
-            self.stream = self.audio.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=16000,
-                input=True,
-                frames_per_buffer=self.chunk_size
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Impossibile aprire microfono per WakeWord: {e}")
-            return False
+    def _open_stream(self) -> bool:
+        with self._lock:
+            if not self.audio:
+                try:
+                    self.audio = pyaudio.PyAudio()
+                except Exception as e:
+                    logger.error("PyAudio non inizializzato e impossibile crearlo: %s", e)
+                    return False
+            try:
+                self.stream = self.audio.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=16000,
+                    input=True,
+                    frames_per_buffer=self.chunk_size
+                )
+                return True
+            except Exception as e:
+                logger.error("Impossibile aprire microfono per WakeWord: %s", e)
+                return False
 
     def _listen_loop(self):
         """Ciclo di ascolto continuo con diagnostica."""
         last_log_time = time.time()
         max_score_seen = 0
+        consecutive_errors = 0
         
-        while self.is_running:
-            if self.is_paused:
+        while True:
+            with self._lock:
+                if not self.is_running:
+                    break
+                paused = self.is_paused
+            
+            if paused:
                 time.sleep(0.5)
                 continue
 
-            if not self.stream:
+            # Controlla ed eventualmente apri lo stream
+            has_stream = False
+            with self._lock:
+                if self.stream:
+                    has_stream = True
+            
+            if not has_stream:
                 if not self._open_stream():
-                    time.sleep(2.0)
+                    consecutive_errors += 1
+                    # Aumenta il tempo di attesa se gli errori sono persistenti
+                    wait_time = min(2.0 * consecutive_errors, 30.0)
+                    if consecutive_errors % 5 == 0:
+                        logger.error("Rilevatore wake word bloccato da continui errori di apertura stream (%d errori). Attesa di %.1fs...", consecutive_errors, wait_time)
+                    time.sleep(wait_time)
                     continue
 
             try:
                 # Legge audio (80ms chunk = 1280 samples)
-                data = self.stream.read(self.chunk_size, exception_on_overflow=False)
+                with self._lock:
+                    if not self.stream:
+                        continue
+                    # Usiamo non-blocking read o read con exception_on_overflow
+                    stream_to_read = self.stream
+                
+                data = stream_to_read.read(self.chunk_size, exception_on_overflow=False)
                 if not data:
                     continue
                 
@@ -147,6 +202,7 @@ class WakeWordDetector:
 
                 # Predizione
                 prediction = self.model.predict(audio_chunk)
+                consecutive_errors = 0  # Resetta contatore su successo
                 
                 if prediction:
                     score = max(prediction.values())
@@ -155,7 +211,7 @@ class WakeWordDetector:
                     
                     # Log periodico del punteggio massimo visto (ogni 5 secondi)
                     if time.time() - last_log_time > 5:
-                        logger.info(f"[WakeWord] In ascolto... (Punteggio max recente: {max_score_seen:.2f}, RMS: {rms:.1f})")
+                        logger.info("[WakeWord] In ascolto... (Punteggio max recente: %.2f, RMS: %.1f)", max_score_seen, rms)
                         max_score_seen = 0
                         last_log_time = time.time()
                     
@@ -163,12 +219,13 @@ class WakeWordDetector:
                     if score >= self.threshold:
                         current_time = time.time()
                         if current_time - self.last_detection_time >= self.cooldown_seconds:
-                            logger.info(f"!!! JARVIS RILEVATO !!! (Score: {score:.2f})")
+                            logger.info("!!! JARVIS RILEVATO !!! (Score: %.2f)", score)
                             self.last_detection_time = current_time
                             if self.on_detected:
                                 self.on_detected()
                 
             except Exception as e:
-                logger.error(f"Errore nel monitoraggio audio: {e}")
+                consecutive_errors += 1
+                logger.error("Errore nel monitoraggio audio openwakeword: %s", e)
                 self._close_stream()
                 time.sleep(0.5)

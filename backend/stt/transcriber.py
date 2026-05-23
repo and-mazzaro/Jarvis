@@ -66,17 +66,34 @@ class Transcriber:
         """Apre il microfono. Chiamare prima di listen_and_transcribe()."""
         if self._mic_open:
             return
-        if self._pa is None:
-            self._pa = pyaudio.PyAudio()
-        self._stream = self._pa.open(
-            format=pyaudio.paInt16,
-            channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=FRAME_SIZE,
-        )
-        self._mic_open = True
-        logger.debug("Microfono STT aperto.")
+        try:
+            if self._pa is None:
+                self._pa = pyaudio.PyAudio()
+            self._stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                input=True,
+                frames_per_buffer=FRAME_SIZE,
+            )
+            self._mic_open = True
+            logger.debug("Microfono STT aperto.")
+        except Exception as e:
+            logger.error("Errore nell'apertura del microfono STT: %s", e)
+            self._mic_open = False
+            if self._stream:
+                try:
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
+            if self._pa:
+                try:
+                    self._pa.terminate()
+                except Exception:
+                    pass
+                self._pa = None
+            raise RuntimeError(f"Impossibile avviare registrazione audio: {e}") from e
 
     def close_mic(self) -> None:
         """Rilascia completamente il microfono per il wake word detector."""
@@ -109,7 +126,11 @@ class Transcriber:
         Apre il microfono se non è già aperto.
         """
         if not self._mic_open:
-            self.open_mic()
+            try:
+                self.open_mic()
+            except Exception as e:
+                logger.error("listen_and_transcribe failed: %s", e)
+                return ""
         audio_data = self._capture_speech()
         if not audio_data:
             return ""
@@ -124,6 +145,10 @@ class Transcriber:
         Usa il microfono aperto, rileva il parlato via VAD
         e restituisce i byte PCM grezzi di una singola utterance.
         """
+        if not self._mic_open or not self._stream:
+            logger.error("Tentativo di catturare audio con microfono non attivo.")
+            return b""
+
         logger.info("Whisper sta ascoltando...")
         num_silence_frames = max(1, int(self.silence_threshold_ms / FRAME_DURATION_MS))
         ring_buffer: collections.deque = collections.deque(maxlen=num_silence_frames)
@@ -134,7 +159,14 @@ class Transcriber:
         timeout = self.initial_timeout_s  # Timeout configurabile per la prima parola
 
         while True:
-            frame = self._stream.read(FRAME_SIZE, exception_on_overflow=False)
+            try:
+                frame = self._stream.read(FRAME_SIZE, exception_on_overflow=False)
+            except Exception as e:
+                logger.error("Errore lettura stream audio STT: %s", e)
+                break
+            
+            if not frame:
+                break
             is_speech = self._vad.is_speech(frame, SAMPLE_RATE)
 
             if not triggered:

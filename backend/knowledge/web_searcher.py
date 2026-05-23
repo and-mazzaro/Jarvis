@@ -19,14 +19,16 @@ class WebSearcher:
         Perform a web search and return a concatenated string of results.
         """
         try:
-            # Pulizia della query usando regex per evitare sostituzioni parziali
-            clean_query = re.sub(r'\b(jarvis|cerca online)\b', '', query, flags=re.IGNORECASE).strip()
+            # Pulizia mirata della query
+            clean_query = re.sub(r'\bcerca online\b', '', query, flags=re.IGNORECASE).strip()
+            # Se inizia con "jarvis,", pulisci anche quello
+            clean_query = re.sub(r'^jarvis\s*,?\s*', '', clean_query, flags=re.IGNORECASE).strip()
             
             if not clean_query:
                 logger.warning("Query di ricerca vuota dopo la pulizia.")
                 return None
 
-            logger.info(f"Ricerca online in corso per: '{clean_query}'")
+            logger.info("Ricerca online in corso per: '%s'", clean_query)
             
             # Uso del context manager (richiesto da DDGS v5+)
             with DDGS() as ddgs:
@@ -40,12 +42,11 @@ class WebSearcher:
             for i, r in enumerate(results, 1):
                 title = r.get('title', 'Senza titolo')
                 body = r.get('body', '')
-                # Aggiungiamo anche la fonte se disponibile
                 href = r.get('href', '')
                 formatted_results.append(f"[{i}] {title}\nFonte: {href}\nContenuto: {body}")
             
             return "\n\n---\n\n".join(formatted_results)
             
         except Exception as e:
-            logger.error(f"Errore nella ricerca online: {e}")
-            return f"Si è verificato un errore durante la ricerca: {str(e)}"
+            logger.error("Errore nella ricerca online: %s", e)
+            return None

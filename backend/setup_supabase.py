@@ -1,6 +1,5 @@
 import os
 import sys
-from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -10,8 +9,7 @@ def setup():
     key = os.getenv("SUPABASE_KEY")
 
     if not url or not key:
-        print("[ERRORE] SUPABASE_URL o SUPABASE_KEY mancanti nel file .env")
-        sys.exit(1)
+        raise ValueError("SUPABASE_URL o SUPABASE_KEY mancanti nel file .env")
 
     try:
         supabase: Client = create_client(url, key)
@@ -25,9 +23,11 @@ def setup():
         res = supabase.table("user_profile").select("*").execute()
         if not res.data:
             print("Inizializzazione profilo utente di default...")
-            supabase.table("user_profile").insert({"key": "name", "value": "Signore"}).execute()
-            supabase.table("user_profile").insert({"key": "language", "value": "italiano"}).execute()
-            supabase.table("user_profile").insert({"key": "preferred_tts_voice", "value": "im_nicola"}).execute()
+            supabase.table("user_profile").insert([
+                {"key": "name", "value": "Signore"},
+                {"key": "language", "value": "italiano"},
+                {"key": "preferred_tts_voice", "value": "im_nicola"}
+            ]).execute()
             print("Profilo inizializzato.")
         else:
             print("Profilo utente già presente.")
@@ -38,4 +38,8 @@ def setup():
         print("Assicurati di aver creato le tabelle via SQL Editor su Supabase dashboard.")
 
 if __name__ == "__main__":
-    setup()
+    try:
+        setup()
+    except Exception as e:
+        print(f"[ERRORE CRITICO] {e}")
+        sys.exit(1)

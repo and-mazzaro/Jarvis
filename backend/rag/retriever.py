@@ -12,18 +12,25 @@ logger = logging.getLogger("jarvis.rag.retriever")
 
 
 class Retriever:
-    def __init__(self, config: dict, chroma_path: Path):
+    def __init__(self, config: dict, chroma_path: Path, embedder=None, chroma_client=None):
         self.collection_name: str = config.get("collection_name", "jarvis_knowledge")
         self.top_k: int = config.get("top_k", 3)
         self.similarity_threshold: float = config.get("similarity_threshold", 0.4)
 
-        self._embedder = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        if embedder is not None:
+            self._embedder = embedder
+        else:
+            self._embedder = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
-        chroma_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=str(chroma_path),
-            settings=Settings(anonymized_telemetry=False),
-        )
+        if chroma_client is not None:
+            self._client = chroma_client
+        else:
+            chroma_path.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=str(chroma_path),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            
         self._col = self._client.get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},
@@ -42,14 +49,15 @@ class Retriever:
           score    — similarity score  (0..1, higher = more similar)
           source   — file name
         """
-        if self._col.count() == 0:
+        col_count = self._col.count()
+        if col_count == 0:
             return []
 
         query_embedding = self._embedder.encode([query], show_progress_bar=False).tolist()
 
         results = self._col.query(
             query_embeddings=query_embedding,
-            n_results=min(self.top_k, self._col.count()),
+            n_results=min(self.top_k, col_count),
             include=["documents", "distances", "metadatas"],
         )
 

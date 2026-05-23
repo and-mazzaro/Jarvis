@@ -36,18 +36,25 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 
 class Ingestor:
-    def __init__(self, config: dict, chroma_path: Path):
+    def __init__(self, config: dict, chroma_path: Path, embedder=None, chroma_client=None):
         self.collection_name: str = config.get("collection_name", "jarvis_knowledge")
         self.chunk_size: int = config.get("chunk_size", 500)
         self.chunk_overlap: int = config.get("chunk_overlap", 50)
 
-        self._embedder = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        if embedder is not None:
+            self._embedder = embedder
+        else:
+            self._embedder = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 
-        chroma_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=str(chroma_path),
-            settings=Settings(anonymized_telemetry=False),
-        )
+        if chroma_client is not None:
+            self._client = chroma_client
+        else:
+            chroma_path.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=str(chroma_path),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            
         self._col = self._client.get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},
@@ -75,6 +82,12 @@ class Ingestor:
         if existing["ids"]:
             logger.info("%s already indexed — skipping.", path.name)
             return {"file": path.name, "chunks_added": 0, "already_indexed": True}
+
+        # Delete any old chunks belonging to the same path (prevent orphans on update)
+        existing_by_path = self._col.get(where={"file_path": str(path)})
+        if existing_by_path["ids"]:
+            self._col.delete(ids=existing_by_path["ids"])
+            logger.info("Removed %d existing chunks for %s before re-indexing.", len(existing_by_path["ids"]), path.name)
 
         text = self._load_text(path)
         if not text.strip():
@@ -144,13 +157,15 @@ class Ingestor:
         elif suffix == ".pdf":
             if not _HAVE_PDF:
                 raise RuntimeError("PyMuPDF required for PDF ingestion.")
-            doc = pymupdf.open(str(path))
-            return "\n".join(page.get_text() for page in doc)
-        elif suffix in (".docx", ".doc"):
+            with pymupdf.open(str(path)) as doc:
+                return "\n".join(page.get_text() for page in doc)
+        elif suffix == ".docx":
             if not _HAVE_DOCX:
                 raise RuntimeError("python-docx required for DOCX ingestion.")
             doc = DocxDocument(str(path))
             return "\n".join(p.text for p in doc.paragraphs)
+        elif suffix == ".doc":
+            raise ValueError("Il formato legacy .doc non è supportato direttamente. Convertilo in .docx prima di procedere.")
         else:
             raise ValueError(f"Unsupported file type: {suffix}")
 
@@ -175,6 +190,8 @@ class Ingestor:
 # --------------------------------------------------------------------------- #
 
 def _file_id(path: Path) -> str:
-    """Stable ID based on file path + content hash."""
-    content_hash = hashlib.md5(path.read_bytes()).hexdigest()[:12]
-    return f"{path.stem}_{content_hash}"
+    """Stable ID based on file path hash + content SHA-256 hash."""
+    abs_path = str(path.resolve())
+    path_hash = hashlib.sha256(abs_path.encode("utf-8")).hexdigest()[:8]
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    return f"{path.stem}_{path_hash}_{content_hash}"

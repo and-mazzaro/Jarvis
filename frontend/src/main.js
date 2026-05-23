@@ -110,6 +110,10 @@ function resizeRenderer() {
 let clock = new THREE.Clock();
 
 function animate() {
+  if (orbView && orbView.classList.contains('hidden')) {
+    // Non pianifica il frame successivo se l'orb non è visibile, risparmiando 100% della GPU
+    return;
+  }
   requestAnimationFrame(animate);
   const t   = clock.getElapsedTime();
   const pos = geometry.attributes.position.array;

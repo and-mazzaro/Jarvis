@@ -60,16 +60,22 @@ _connected_clients: set = set()
 
 async def broadcast(state: str, extra: Optional[dict] = None) -> None:
     """Send a state-change JSON message to all connected WebSocket clients."""
+    if not _connected_clients:
+        return
     msg: dict = {"state": state}
     if extra:
         msg.update(extra)
     payload = json.dumps(msg)
-    if not _connected_clients:
-        return
-    await asyncio.gather(
-        *[ws.send(payload) for ws in list(_connected_clients)],
+    
+    clients = list(_connected_clients)
+    results = await asyncio.gather(
+        *[ws.send(payload) for ws in clients],
         return_exceptions=True,
     )
+    for ws, res in zip(clients, results):
+        if isinstance(res, Exception):
+            logger.warning("WS send failed, removing client: %s", res)
+            _connected_clients.discard(ws)
 
 
 async def _ws_handler(websocket) -> None:
@@ -94,7 +100,7 @@ async def _handle_status(request: web.Request) -> web.Response:
     return _cors(web.json_response({
         "status": "ok",
         "kiwix": kiwix_ok,
-        "rag_docs": _ingestor.list_files().__len__() if _ingestor else 0,
+        "rag_docs": len(_ingestor.list_files()) if _ingestor else 0,
     }))
 
 
@@ -114,8 +120,16 @@ async def _handle_ingest(request: web.Request) -> web.Response:
         file_path = body.get("file_path", "").strip()
         if not file_path:
             return _cors(web.json_response({"error": "file_path required"}, status=400))
+        
+        # Validazione del percorso file
+        path_obj = Path(file_path)
+        if not path_obj.exists():
+            return _cors(web.json_response({"error": f"File does not exist: {file_path}"}, status=400))
+        if not path_obj.is_file():
+            return _cors(web.json_response({"error": "Path is not a file"}, status=400))
+
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, _ingestor.ingest_file, file_path)
+        result = await loop.run_in_executor(None, _ingestor.ingest_file, str(path_obj.resolve()))
         return _cors(web.json_response(result))
     except Exception as exc:
         logger.error("Ingest error: %s", exc, exc_info=True)
@@ -163,18 +177,25 @@ async def _handle_kiwix_search(request: web.Request) -> web.Response:
 
 
 async def _handle_static(request: web.Request) -> web.Response:
-    """Serve frontend/dist/ as static files."""
+    """Serve frontend/dist/ as static files securely and non-blockingly."""
     path = request.match_info.get("path", "") or "index.html"
     if path in ("", "/"):
         path = "index.html"
-    file_path = _frontend_dist / path.lstrip("/")
-    if not file_path.exists() or not file_path.is_file():
-        file_path = _frontend_dist / "index.html"
-    mime, _ = mimetypes.guess_type(str(file_path))
-    return web.Response(
-        body=file_path.read_bytes(),
-        content_type=mime or "application/octet-stream",
-    )
+    
+    # Previene Path Traversal
+    base_path = _frontend_dist.resolve()
+    target_path = (base_path / path.lstrip("/")).resolve()
+    
+    try:
+        target_path.relative_to(base_path)
+    except ValueError:
+        # Tentativo di uscire dalla cartella statica -> serve index.html
+        target_path = base_path / "index.html"
+
+    if not target_path.exists() or not target_path.is_file():
+        target_path = base_path / "index.html"
+
+    return web.FileResponse(target_path)
 
 
 # --------------------------------------------------------------------------- #

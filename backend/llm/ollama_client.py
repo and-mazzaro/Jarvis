@@ -23,6 +23,7 @@ class OllamaClient:
             "system_prompt",
             "You are Jarvis, a helpful local AI assistant. Be concise and clear.",
         )
+        self._session = requests.Session()
 
     # ------------------------------------------------------------------
     # Public API
@@ -82,7 +83,8 @@ class OllamaClient:
         logger.debug("POST %s  model=%s", url, self.model)
 
         try:
-            with requests.post(url, json=payload, stream=True, timeout=120) as resp:
+            # Separazione timeout: 5s per la connessione, 120s per la lettura dello stream
+            with self._session.post(url, json=payload, stream=True, timeout=(5, 120)) as resp:
                 resp.raise_for_status()
                 for raw_line in resp.iter_lines():
                     if not raw_line:
@@ -102,18 +104,17 @@ class OllamaClient:
 
         except requests.RequestException as exc:
             logger.error("Ollama request failed: %s", exc)
-            yield f"[Error contacting Ollama: {exc}]"
+            raise RuntimeError(f"Error contacting Ollama: {exc}") from exc
 
     def generate(self, user_message: str = "", **kwargs) -> str:
         """Blocking version — collect all tokens and return the full string."""
-        # Handle cases where 'prompt' might be used instead of 'user_message'
         msg = user_message or kwargs.pop("prompt", "")
         return "".join(self.generate_stream(msg, **kwargs))
 
     def is_alive(self) -> bool:
         """Return True if Ollama is reachable."""
         try:
-            r = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            r = self._session.get(f"{self.base_url}/api/tags", timeout=5)
             return r.status_code == 200
         except requests.RequestException:
             return False

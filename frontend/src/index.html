@@ -94,10 +94,6 @@
       border-right: 1px solid var(--border);
     }
     
-    #main {
-      padding-top: 32px;
-    }
-
     #orb-view {
       background: radial-gradient(circle at center, #0a1128 0%, #050810 100%);
     }
@@ -157,6 +153,7 @@
 
     /* ===== MAIN AREA ===== */
     #main {
+      padding-top: 32px;
       flex: 1;
       position: relative;
       overflow: hidden;
@@ -172,7 +169,7 @@
       justify-content: center;
       transition: opacity 0.4s, transform 0.4s;
     }
-    #orb-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.97); }
+    #orb-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.97); visibility: hidden; }
 
     #three-canvas {
       position: absolute;
@@ -289,7 +286,7 @@
       background: var(--bg-deep);
       transition: opacity 0.4s, transform 0.4s;
     }
-    #knowledge-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.98); }
+    #knowledge-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.98); visibility: hidden; }
 
     .kp-header {
       padding: 24px 32px 0;
@@ -774,7 +771,7 @@
 <div id="toast-container"></div>
 
 <!-- Three.js r128 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/three.min.js"></script>
 <script src="main.js"></script>
 <script src="knowledge-panel.js"></script>
 </body>

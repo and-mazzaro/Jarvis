@@ -2,9 +2,12 @@ import os
 import uuid
 import threading
 import queue
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+logger = logging.getLogger("jarvis.memory")
 
 class JarvisMemory:
     def __init__(self):
@@ -21,12 +24,13 @@ class JarvisMemory:
         
         self.profile = {}
         self.recent_messages = []
+        self._lock = threading.Lock()
         self._data_ready = threading.Event()
 
         # Carica dati in background — non blocca l'avvio
         threading.Thread(target=self._load_initial_data_async, daemon=True).start()
 
-        # Coda per scrittura asincrona
+        # Coda per scrittura asincrona unificata (messaggi + profilo)
         self._write_queue = queue.Queue()
         self._writer_thread = threading.Thread(target=self._async_writer, daemon=True)
         self._writer_thread.start()
@@ -35,7 +39,7 @@ class JarvisMemory:
         """Carica profilo e messaggi in background senza bloccare l'avvio."""
         self._load_initial_data()
         self._data_ready.set()
-        print("[Memory] Dati caricati in background.")
+        logger.info("Dati caricati in background.")
 
     def wait_ready(self, timeout: float = 5.0):
         """
@@ -48,7 +52,8 @@ class JarvisMemory:
         try:
             # Carica profilo
             res_p = self.supabase.table("user_profile").select("*").execute()
-            self.profile = {item['key']: item['value'] for item in res_p.data}
+            with self._lock:
+                self.profile = {item['key']: item['value'] for item in res_p.data}
             
             # Carica messaggi recenti
             res_m = self.supabase.table("conversations")\
@@ -57,63 +62,79 @@ class JarvisMemory:
                 .limit(self.context_limit)\
                 .execute()
             # L'ordine è desc, ribaltiamo per la storia
-            self.recent_messages = list(reversed(res_m.data))
-            print(f"[Memory] Caricati {len(self.recent_messages)} messaggi di contesto.")
+            with self._lock:
+                self.recent_messages = list(reversed(res_m.data))
+            logger.info("Caricati %d messaggi di contesto.", len(self.recent_messages))
         except Exception as e:
-            print(f"[Memory] Errore caricamento iniziale: {e}")
+            logger.error("Errore caricamento iniziale: %s", e)
 
     def add_message(self, role, content):
-        # Aggiornamento locale immediato
+        # Aggiornamento locale immediato con thread lock
         msg = {"role": role, "content": content}
-        self.recent_messages.append(msg)
-        if len(self.recent_messages) > self.context_limit:
-            self.recent_messages.pop(0)
+        with self._lock:
+            self.recent_messages.append(msg)
+            if len(self.recent_messages) > self.context_limit:
+                self.recent_messages.pop(0)
             
         # In coda per salvataggio asincrono
         self._write_queue.put({
-            "session_id": self.session_id,
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat(),
-            "tokens_estimated": len(content) // 4
+            "action": "insert_message",
+            "data": {
+                "session_id": self.session_id,
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().isoformat(),
+                "tokens_estimated": len(content) // 4
+            }
         })
 
     def _async_writer(self):
         while True:
             item = self._write_queue.get()
-            if item is None: break
+            if item is None:
+                break
             try:
-                self.supabase.table("conversations").insert(item).execute()
+                action = item.get("action")
+                data = item.get("data")
+                if action == "insert_message":
+                    self.supabase.table("conversations").insert(data).execute()
+                elif action == "upsert_profile":
+                    self.supabase.table("user_profile").upsert(data).execute()
             except Exception as e:
-                print(f"[Memory] Errore scrittura Supabase: {e}")
+                logger.error("Errore scrittura Supabase: %s", e)
             finally:
                 self._write_queue.task_done()
 
     def get_context_messages(self):
-        return self.recent_messages
+        with self._lock:
+            return list(self.recent_messages)
 
     def get_profile_summary(self):
         summary = ""
-        for k, v in self.profile.items():
-            summary += f"{k.capitalize()}: {v}\n"
+        with self._lock:
+            for k, v in self.profile.items():
+                summary += f"{k.capitalize()}: {v}\n"
         return summary or "Nessuna informazione profilo."
 
     def update_profile(self, key, value):
-        self.profile[key] = value
-        # Upsert asincrono "leggero"
-        threading.Thread(target=self._do_upsert_profile, args=(key, value), daemon=True).start()
+        with self._lock:
+            self.profile[key] = value
+        
+        # Invia alla coda unificata in background
+        self._write_queue.put({
+            "action": "upsert_profile",
+            "data": {
+                "key": key,
+                "value": value,
+                "updated_at": datetime.now().isoformat()
+            }
+        })
 
-    def _do_upsert_profile(self, key, value):
-        try:
-            self.supabase.table("user_profile").upsert({
-                "key": key, "value": value, "updated_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            print(f"[Memory] Errore update profilo: {e}")
-
-    def end_session(self, llm_client):
-        # Generazione riepilogo (opzionale se richiesto esplicitamente)
-        print(f"[Memory] Fine sessione {self.session_id}.")
+    def end_session(self, llm_client=None):
+        logger.info("Fine sessione %s. Salvataggio messaggi pendenti...", self.session_id)
+        # Flush queue and stop writer thread gracefully
+        self._write_queue.put(None)
+        self._writer_thread.join(timeout=5.0)
         self._rotate_old_conversations()
 
     def _rotate_old_conversations(self):

@@ -1,8 +1,29 @@
+import re
+
+def sanitize_profile_value(val: str) -> str:
+    """Sanitizza i valori del profilo utente per evitare prompt injection."""
+    if not val:
+        return ""
+    # Limita la lunghezza a 100 caratteri
+    val = val[:100].strip()
+    # Rimuove a capo e tabulazioni
+    val = re.sub(r'[\r\n\t]+', ' ', val)
+    # Filtra parole chiave tipiche di prompt injection
+    val = re.sub(r'(?i)\b(ignore|ignora|system\s+prompt|istruzioni|override|rules|regole|istruzione|precendete|precedenti)\b', '', val)
+    return val.strip()
+
 def build_system_prompt(memory) -> str:
-    profile_summary = memory.get_profile_summary()
+    # Genera un riepilogo del profilo con valori sanitizzati
+    profile_summary = ""
+    for k, v in memory.profile.items():
+        clean_v = sanitize_profile_value(v)
+        if clean_v:
+            profile_summary += f"{k.capitalize()}: {clean_v}\n"
+    if not profile_summary:
+        profile_summary = "Nessuna informazione profilo."
     
-    # Estrai il nome dell'utente se disponibile
-    user_name = memory.profile.get("nome", "")
+    # Estrai il nome dell'utente se disponibile e sanitizzalo
+    user_name = sanitize_profile_value(memory.profile.get("nome", ""))
     name_instruction = ""
     if user_name:
         name_instruction = f'Conosci il nome dell\'utente: "{user_name}". Puoi usarlo occasionalmente nelle risposte per personalizzare l\'interazione.\n'

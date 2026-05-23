@@ -43,6 +43,7 @@ class Synthesizer:
         self._playback_done.set()  # parte come "done" (niente in riproduzione)
         self._pending_count = 0
         self._pending_lock = threading.Lock()
+        self._sd_lock = threading.Lock()
         self.playback_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self.playback_thread.start()
 
@@ -88,15 +89,22 @@ class Synthesizer:
                 break
             samples, sample_rate, on_start, on_done = item
             if on_start:
-                on_start()
+                try:
+                    on_start()
+                except Exception as e:
+                    logger.error("Errore in on_start: %s", e)
             if samples is not None and len(samples) > 0:
                 try:
-                    sd.play(samples, samplerate=sample_rate)
-                    sd.wait()  # Blocca finché l'audio non finisce DAVVERO
+                    with self._sd_lock:
+                        sd.play(samples, samplerate=sample_rate)
+                        sd.wait()  # Blocca finché l'audio non finisce DAVVERO
                 except Exception as e:
                     logger.error("Errore riproduzione: %s", e)
             if on_done:
-                on_done()
+                try:
+                    on_done()
+                except Exception as e:
+                    logger.error("Errore in on_done: %s", e)
             # Decrementa contatore; se è l'ultimo, segnala done
             with self._pending_lock:
                 self._pending_count = max(0, self._pending_count - 1)
@@ -126,7 +134,10 @@ class Synthesizer:
             return
 
         if on_start:
-            on_start()
+            try:
+                on_start()
+            except Exception as e:
+                logger.error("Errore in on_start: %s", e)
 
         logger.info("🔊 Sintesi vocale in corso (Kokoro: %s)...", self.voice_name)
         
@@ -147,17 +158,19 @@ class Synthesizer:
             if sample_rate != self.sample_rate:
                 self.sample_rate = sample_rate
 
-            # sounddevice plays float32 numpy arrays directly
-            # Kokoro returns float32 by default
-            sd.play(samples, samplerate=self.sample_rate)
-            sd.wait()
+            with self._sd_lock:
+                sd.play(samples, samplerate=self.sample_rate)
+                sd.wait()
             logger.info("✅ Riproduzione completata.")
+            
+            if on_done:
+                try:
+                    on_done()
+                except Exception as e:
+                    logger.error("Errore in on_done: %s", e)
             
         except Exception as e:
             logger.error("❌ Errore durante la sintesi Kokoro: %s", e, exc_info=True)
-
-        if on_done:
-            on_done()
 
     def speak_async(
         self,

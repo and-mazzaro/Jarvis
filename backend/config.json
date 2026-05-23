@@ -9,8 +9,7 @@
     "repeat_penalty": 1.1,
     "top_k": 20,
     "top_p": 0.9,
-    "stream": true,
-    "system_prompt": "Io sono Jarvis, un assistente vocale italiano. Sii estremamente breve."
+    "stream": true
   },
   "stt": {
     "model": "base",

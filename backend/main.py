@@ -18,9 +18,6 @@ import concurrent.futures
 import re
 import time
 from pathlib import Path
-from memory.supabase_memory import JarvisMemory
-from prompt_builder import build_system_prompt
-from wake_word.detector import WakeWordDetector  # AGGIUNTO FASE 3
 
 # ---------------------------------------------------------------------------
 # Resolve project root and add it to sys.path
@@ -52,27 +49,37 @@ with open(CONFIG_PATH, encoding="utf-8") as _f:
 # ---------------------------------------------------------------------------
 # Imports (after sys.path setup)
 # ---------------------------------------------------------------------------
+from memory.supabase_memory import JarvisMemory
+from prompt_builder import build_system_prompt
+from wake_word.detector import WakeWordDetector
 from llm.ollama_client import OllamaClient
 from stt.transcriber import Transcriber
 from tts.synthesizer import Synthesizer
 from rag.ingestor import Ingestor
 from rag.retriever import Retriever
 from knowledge.kiwix_client import KiwixClient
-from knowledge.web_searcher import WebSearcher # AGGIUNTO
+from knowledge.web_searcher import WebSearcher
 import ws_server
 
-
 # ---------------------------------------------------------------------------
-# Global state
+# Global state and ThreadPool
 # ---------------------------------------------------------------------------
 _current_state = "idle"
+_state_lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
-_wake_word_detected = threading.Event()  # AGGIUNTO FASE 3
+_wake_word_detected = threading.Event()
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+
+
+def _get_state() -> str:
+    with _state_lock:
+        return _current_state
 
 
 def _set_state(state: str) -> None:
     global _current_state
-    _current_state = state
+    with _state_lock:
+        _current_state = state
     if _loop and not _loop.is_closed():
         asyncio.run_coroutine_threadsafe(ws_server.broadcast(state), _loop)
     logger.info("State → %s", state)
@@ -80,6 +87,7 @@ def _set_state(state: str) -> None:
     # Reset event if entering waiting state
     if state == "waiting":
         _wake_word_detected.clear()
+
 
 
 # ---------------------------------------------------------------------------
@@ -109,18 +117,17 @@ def _retrieve_context(query, retriever, kiwix, web_searcher):
 
     rag_context, used_rag = "", False
     wiki_text = ""
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_rag = executor.submit(retriever.build_context, query)
-        future_wiki = executor.submit(kiwix.search, query) if kiwix.is_alive() else None
+    future_rag = _executor.submit(retriever.build_context, query)
+    future_wiki = _executor.submit(kiwix.search, query) if kiwix.is_alive() else None
+    try:
+        rag_context, used_rag = future_rag.result(timeout=1.5)
+    except Exception:
+        rag_context, used_rag = "", False
+    if future_wiki:
         try:
-            rag_context, used_rag = future_rag.result(timeout=1.5)
+            wiki_text = future_wiki.result(timeout=1.5)
         except Exception:
-            rag_context, used_rag = "", False
-        if future_wiki:
-            try:
-                wiki_text = future_wiki.result(timeout=1.5)
-            except Exception:
-                pass
+            pass
 
     parts = []
     if used_rag:
@@ -142,6 +149,7 @@ def _generate_and_speak(query, context, llm, synthesizer, memory):
     response_tokens: list[str] = []
     sentence_buffer = ""
     first_sentence = True
+    last_broadcast_time = 0.0
 
     for token in llm.generate_stream(query, context, system_prompt=system_prompt, history=history):
         response_tokens.append(token)
@@ -164,13 +172,16 @@ def _generate_and_speak(query, context, llm, synthesizer, memory):
                 else:
                     synthesizer.enqueue(sentence)
 
-        # Stream testo parziale alla UI
-        partial = "".join(response_tokens)
-        if _loop and not _loop.is_closed():
-            asyncio.run_coroutine_threadsafe(
-                ws_server.broadcast("generating", {"partial": partial}),
-                _loop,
-            )
+        # Stream testo parziale alla UI con throttling a 100ms
+        current_time = time.time()
+        if current_time - last_broadcast_time > 0.1 or token in ".?!:;\n":
+            last_broadcast_time = current_time
+            partial = "".join(response_tokens)
+            if _loop and not _loop.is_closed():
+                asyncio.run_coroutine_threadsafe(
+                    ws_server.broadcast("generating", {"partial": partial}),
+                    _loop,
+                )
 
     # Accoda il testo rimanente (ultima frase, anche senza punto finale)
     if sentence_buffer.strip():
@@ -178,6 +189,14 @@ def _generate_and_speak(query, context, llm, synthesizer, memory):
             synthesizer.enqueue(sentence_buffer.strip(), on_start=lambda: _set_state("speaking"))
         else:
             synthesizer.enqueue(sentence_buffer.strip())
+
+    # Assicura broadcast finale alla fine della generazione
+    partial = "".join(response_tokens)
+    if _loop and not _loop.is_closed():
+        asyncio.run_coroutine_threadsafe(
+            ws_server.broadcast("generating", {"partial": partial}),
+            _loop,
+        )
 
     response_text = "".join(response_tokens).strip()
     memory.add_message("assistant", response_text)
@@ -196,12 +215,19 @@ def _extract_user_profile(query, response, memory):
     """
     q_lower = query.lower()
 
+    # Estrazione età tramite regex
+    age_match = re.search(r'\bho\s+(\d+)\s+anni\b', q_lower)
+    if age_match:
+        age_val = age_match.group(1)
+        memory.update_profile("età", age_val)
+        logger.info("[Profile] età → %s", age_val)
+
     # Pattern di profilazione: coppie (pattern_keywords, profile_key)
+    # Rimossa la parola "sono" troppo generica per evitare falsi positivi
     profile_patterns = [
-        (["mi chiamo", "il mio nome è", "sono"], "nome"),
+        (["mi chiamo", "il mio nome è", "chiamami"], "nome"),
         (["abito a", "vivo a", "sono di", "la mia città"], "città"),
         (["lavoro come", "faccio il", "sono un", "sono una", "di professione"], "professione"),
-        (["ho ... anni", "la mia età"], "età"),
         (["mi piace", "mi piacciono", "adoro", "amo"], "interessi"),
         (["studio", "frequento", "la mia scuola", "università"], "studi"),
     ]
@@ -346,11 +372,23 @@ async def main() -> None:
     if not llm.is_alive():
         logger.warning("Ollama not reachable at %s — LLM will fail!", CONFIG["llm"]["base_url"])
 
-    ingestor = Ingestor(CONFIG["rag"], CHROMA_PATH)
-    retriever = Retriever(CONFIG["rag"], CHROMA_PATH)
-    kiwix = KiwixClient(CONFIG["kiwix"])
-    web_searcher = WebSearcher() # AGGIUNTO
+    logger.info("Caricamento modello di embedding SentenceTransformer e client ChromaDB...")
+    import chromadb
+    from chromadb.config import Settings
+    from sentence_transformers import SentenceTransformer
+    
+    shared_embedder = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    CHROMA_PATH.mkdir(parents=True, exist_ok=True)
+    shared_chroma_client = chromadb.PersistentClient(
+        path=str(CHROMA_PATH),
+        settings=Settings(anonymized_telemetry=False),
+    )
 
+    ingestor = Ingestor(CONFIG["rag"], CHROMA_PATH, embedder=shared_embedder, chroma_client=shared_chroma_client)
+    retriever = Retriever(CONFIG["rag"], CHROMA_PATH, embedder=shared_embedder, chroma_client=shared_chroma_client)
+    kiwix = KiwixClient(CONFIG["kiwix"])
+    web_searcher = WebSearcher()
+    
     synthesizer = Synthesizer(CONFIG["tts"], PROJECT_ROOT)
     transcriber = Transcriber(CONFIG["stt"])
 
@@ -370,7 +408,7 @@ async def main() -> None:
 
     # AGGIUNTO FASE 3: Callback Wake Word
     def on_wake_word_detected():
-        if _current_state == "waiting":
+        if _get_state() == "waiting":
             _wake_word_detected.set()
 
     # AGGIUNTO FASE 3: Inizializzazione Wake Word
@@ -384,11 +422,7 @@ async def main() -> None:
 
     # AGGIUNTO FASE 2: Signal Handling (Aggiornato FASE 3)
     def on_shutdown(sig, frame):
-        logger.info("Jarvis: chiusura in corso, salvo la sessione...")
-        if wake_detector:
-            wake_detector.stop()
-        memory.end_session(llm)
-        sys.exit(0)
+        raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, on_shutdown)
     signal.signal(signal.SIGTERM, on_shutdown)
@@ -401,15 +435,31 @@ async def main() -> None:
     )
     vl_thread.start()
 
-    # Run servers (blocks forever)
-    await ws_server.run_servers(
-        ws_port=CONFIG["server"]["ws_port"],
-        http_port=CONFIG["server"]["http_port"],
-        ingestor=ingestor,
-        retriever=retriever,
-        kiwix_client=kiwix,
-        frontend_dist=PROJECT_ROOT / "frontend" / "dist",
-    )
+    try:
+        # Run servers (blocks forever)
+        await ws_server.run_servers(
+            ws_port=CONFIG["server"]["ws_port"],
+            http_port=CONFIG["server"]["http_port"],
+            ingestor=ingestor,
+            retriever=retriever,
+            kiwix_client=kiwix,
+            frontend_dist=PROJECT_ROOT / "frontend" / "dist",
+        )
+    finally:
+        logger.info("Jarvis: chiusura in corso, salvo la sessione...")
+        if wake_detector:
+            try:
+                wake_detector.stop()
+            except Exception:
+                pass
+        try:
+            memory.end_session(llm)
+        except Exception:
+            pass
+        try:
+            _executor.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

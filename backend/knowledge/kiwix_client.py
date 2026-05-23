@@ -84,12 +84,14 @@ class KiwixClient:
 
             soup = BeautifulSoup(r.text, "html.parser")
             # kiwix-serve returns a list of <a> hrefs
-            first_link = soup.find("a", href=True)
-            if first_link:
-                href = first_link["href"]
-                if href.startswith("/"):
-                    return self.base_url + href
-                return href
+            links = soup.find_all("a", href=True)
+            for link in links:
+                href = link["href"]
+                # Skip navigation links, only match article paths containing "/A/"
+                if "/A/" in href and not any(skip in href.lower() for skip in ["search", "help", "about"]):
+                    if href.startswith("/"):
+                        return self.base_url + href
+                    return href
         except requests.RequestException as exc:
             logger.warning("Kiwix search error: %s", exc)
 
@@ -99,8 +101,14 @@ class KiwixClient:
         """
         Attempt a direct URL based on title convention used by kiwix-serve.
         e.g. /content_id/A/Titolo_Articolo
+        Wikipedia typical URL only capitalizes the first word.
         """
-        title = "_".join(word.capitalize() for word in query.strip().split())
+        words = query.strip().split()
+        if words:
+            words[0] = words[0].capitalize()
+            title = "_".join(words)
+        else:
+            title = ""
         return f"{self.base_url}/{self.content_id}/A/{urllib.parse.quote(title)}"
 
     def _fetch_article_text(self, url: str) -> str:
@@ -117,7 +125,8 @@ class KiwixClient:
 
             # Grab <p> paragraphs
             paragraphs = [p.get_text(separator=" ", strip=True) for p in soup.find_all("p")]
-            text = "\n".join(p for p in paragraphs if len(p) > 40)
+            # Abbassato a > 15 per evitare di scartare frasi importanti ma brevi
+            text = "\n".join(p for p in paragraphs if len(p) > 15)
             return _clean_text(text)
         except requests.RequestException as exc:
             logger.warning("Kiwix fetch error: %s", exc)
