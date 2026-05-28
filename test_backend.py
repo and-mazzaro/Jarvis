@@ -6,7 +6,7 @@ Run from the project root with the venv active:
 
 Checks:
   1. Config file loads correctly
-  2. Ollama is reachable and the target model exists
+  2. DeepSeek API key is configured
   3. LLM can generate a short response
   4. RAG ingestor + retriever initialise without errors
   5. Kiwix connectivity (optional — skipped if offline)
@@ -58,12 +58,14 @@ with check("Config loads"):
         cfg = json.load(f)
     assert "llm" in cfg and "stt" in cfg and "rag" in cfg
 
-# -- 2. Ollama reachable ----------------------------------------------------
+# -- 2. DeepSeek API key ----------------------------------------------------
 
-with check("Ollama reachable"):
-    from llm.ollama_client import OllamaClient
-    llm = OllamaClient(cfg["llm"])
-    assert llm.is_alive(), "Ollama not running - start Ollama and retry."
+with check("DeepSeek API key"):
+    from dotenv import load_dotenv
+    load_dotenv()
+    from llm.deepseek_client import DeepSeekClient
+    llm = DeepSeekClient(cfg["llm"])
+    assert llm.is_alive(), "DEEPSEEK_API_KEY mancante in .env — vedi README."
 
 # -- 3. LLM generates ------------------------------------------------------
 

@@ -1,7 +1,7 @@
 {
   "name": "jarvis-windows",
   "version": "1.0.0",
-  "description": "Jarvis — Local AI Voice Assistant for Windows",
+  "description": "Jarvis — Hybrid AI Voice Assistant (DeepSeek V4 Flash + local STT/TTS/RAG)",
   "main": "electron/main.js",
   "scripts": {
     "start":      "electron .",
@@ -11,7 +11,7 @@
     "build":      "electron-builder --config electron/electron-builder.yml",
     "build:dir":  "electron-builder --config electron/electron-builder.yml --dir"
   },
-  "keywords": ["jarvis", "ai", "voice", "assistant", "ollama", "offline"],
+  "keywords": ["jarvis", "ai", "voice", "assistant", "deepseek", "offline"],
   "author": "Jarvis Team",
   "license": "MIT",
   "devDependencies": {

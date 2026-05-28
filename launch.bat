@@ -9,21 +9,42 @@ echo  JARVIS — Local AI Voice Assistant
 echo ============================================================
 echo.
 
-:: ── 1. Start Ollama ────────────────────────────────────────────
-echo [1/4] Avvio di Ollama...
-start /B "" ollama serve
-timeout /t 3 /nobreak > nul
-echo       Ollama avviato.
+:: ── 1. Rilevamento Chiave DeepSeek API ───────────────────────────
+echo [1/4] Verifica configurazione DeepSeek...
+set "TEMP_KEY="
+if exist "%~dp0.env" (
+    for /f "usebackq tokens=1,2 delims==" %%a in ("%~dp0.env") do (
+        if "%%a"=="DEEPSEEK_API_KEY" (
+            set "TEMP_KEY=%%b"
+        )
+    )
+)
+if "%TEMP_KEY%"=="" (
+    echo [ERRORE] Chiave API DeepSeek non configurata in %~dp0.env.
+    echo Per favore, inserisci la tua DEEPSEEK_API_KEY nel file .env per far funzionare l'IA.
+    pause
+    exit /b 1
+)
+if "%TEMP_KEY%"=="your_deepseek_api_key_here" (
+    echo [ERRORE] Chiave API DeepSeek ancora impostata al valore di default.
+    echo Per favore, modifica il file %~dp0.env sostituendo 'your_deepseek_api_key_here' con la tua vera chiave DeepSeek.
+    pause
+    exit /b 1
+)
+echo       DeepSeek configurato correttamente.
 echo.
 
 :: ── 2. Avvio kiwix-serve (Wikipedia Italiana) ────────────────────
 echo [2/4] Avvio di kiwix-serve...
-set "KIWIX_ZIM_PATH=%~dp0wikipedia_it_all_nopic_2026-02.zim"
-if exist "%KIWIX_ZIM_PATH%" (
-    start /B "" "kiwix-serve.exe" --port 8888 "%KIWIX_ZIM_PATH%"
-    echo       kiwix-serve avviato sulla porta 8888.
+set "KIWIX_ZIM_PATH="
+for %%f in ("%~dp0wikipedia_it_all_nopic_*.zim") do (
+    set "KIWIX_ZIM_PATH=%%f"
+)
+if defined KIWIX_ZIM_PATH (
+    start /B "" "%~dp0kiwix-serve.exe" --port 8888 "!KIWIX_ZIM_PATH!"
+    echo       kiwix-serve avviato sulla porta 8888 con !KIWIX_ZIM_PATH!.
 ) else (
-    echo       [ATTENZIONE] File ZIM non trovato in %KIWIX_ZIM_PATH%
+    echo       [ATTENZIONE] File ZIM wikipedia_it_all_nopic_*.zim non trovato in %~dp0.
     echo       Wikipedia offline non sarà disponibile.
 )
 echo.

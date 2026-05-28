@@ -69,21 +69,22 @@ python -c "import openwakeword; openwakeword.utils.download_models(['hey_jarvis'
 echo Modello wake word scaricato.
 echo.
 
-:: ── Pull Ollama model ──────────────────────────────────────────
-echo [4/5] Pulling Ollama model (mistral:7b-instruct)...
-ollama --version > nul 2>&1
-if errorlevel 1 (
-    echo [WARNING] Ollama not found in PATH.
-    echo           Download from: https://ollama.com
-    echo           After installing, run: ollama pull mistral:7b-instruct
+:: ── DeepSeek API key (.env) ────────────────────────────────────
+echo [4/6] Verifica chiave API DeepSeek...
+if not exist ".env" (
+    if exist ".env.example" (
+        copy /Y ".env.example" ".env" > nul
+        echo       Creato .env da .env.example — inserisci la tua DEEPSEEK_API_KEY.
+    ) else (
+        echo [WARNING] File .env non trovato. Crealo con DEEPSEEK_API_KEY=sk-...
+    )
 ) else (
-    ollama pull mistral:7b-instruct
-    echo       Model ready.
+    echo       File .env presente.
 )
 echo.
 
 :: ── Install Node dependencies ──────────────────────────────────
-echo [5/6] Installing Electron/Frontend dependencies...
+echo [5/7] Installing Electron/Frontend dependencies...
 where npm > nul 2>&1
 if errorlevel 1 (
     echo [WARNING] Node.js/npm not found. Please install Node.js to use the UI.
@@ -93,7 +94,7 @@ if errorlevel 1 (
 echo.
 
 :: ── Create required directories ────────────────────────────────
-echo [6/6] Creating project directories...
+echo [6/7] Creating project directories...
 if not exist "chroma_db"  mkdir chroma_db
 if not exist "documents"  mkdir documents
 echo       Done.
@@ -101,6 +102,7 @@ echo.
 
 echo.
 echo [7/7] Configurazione database Supabase...
+echo       LLM: DeepSeek V4 Flash (nessun modello locale da scaricare).
 python backend/setup_supabase.py
 echo.
 

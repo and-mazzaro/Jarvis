@@ -4,14 +4,12 @@ import threading
 import queue
 import logging
 from datetime import datetime
-from dotenv import load_dotenv
 from supabase import create_client, Client
 
 logger = logging.getLogger("jarvis.memory")
 
 class JarvisMemory:
     def __init__(self):
-        load_dotenv()
         self.url = os.getenv("SUPABASE_URL")
         self.key = os.getenv("SUPABASE_KEY")
         self.context_limit = int(os.getenv("JARVIS_CONTEXT_MESSAGES", 20))

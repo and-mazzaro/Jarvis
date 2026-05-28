@@ -32,6 +32,9 @@ sys.path.insert(0, str(BACKEND_DIR))
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
@@ -52,7 +55,7 @@ with open(CONFIG_PATH, encoding="utf-8") as _f:
 from memory.supabase_memory import JarvisMemory
 from prompt_builder import build_system_prompt
 from wake_word.detector import WakeWordDetector
-from llm.ollama_client import OllamaClient
+from llm.deepseek_client import DeepSeekClient
 from stt.transcriber import Transcriber
 from tts.synthesizer import Synthesizer
 from rag.ingestor import Ingestor
@@ -260,7 +263,7 @@ def voice_loop(
     transcriber: Transcriber,
     retriever: Retriever,
     kiwix: KiwixClient,
-    llm: OllamaClient,
+    llm: DeepSeekClient,
     synthesizer: Synthesizer,
     memory: JarvisMemory,
     wake_detector: WakeWordDetector = None,
@@ -368,9 +371,9 @@ async def main() -> None:
     logger.info("Initialising Jarvis …")
 
     # Instantiate components
-    llm = OllamaClient(CONFIG["llm"])
+    llm = DeepSeekClient(CONFIG["llm"])
     if not llm.is_alive():
-        logger.warning("Ollama not reachable at %s — LLM will fail!", CONFIG["llm"]["base_url"])
+        logger.warning("DeepSeek API key mancante in .env — le risposte LLM falliranno!")
 
     logger.info("Caricamento modello di embedding SentenceTransformer e client ChromaDB...")
     import chromadb
@@ -398,12 +401,12 @@ async def main() -> None:
     memory.wait_ready(timeout=3.0)
     
     # AGGIUNTO FASE 2: Pre-warming LLM
-    def prewarm_llm(ollama_client):
+    def prewarm_llm(client):
         try:
-            ollama_client.generate(user_message="Ciao", max_tokens=1)
-            logger.info("Modello pre-caricato in RAM.")
+            client.generate(user_message="Ciao", max_tokens=1)
+            logger.info("Connessione DeepSeek V4 Flash verificata.")
         except Exception as e:
-            logger.debug("Errore pre-warm LLM: %s", e)
+            logger.debug("Errore pre-warm DeepSeek: %s", e)
     threading.Thread(target=prewarm_llm, args=(llm,), daemon=True).start()
 
     # AGGIUNTO FASE 3: Callback Wake Word

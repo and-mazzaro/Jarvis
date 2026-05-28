@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('jarvisIPC', {
 
   // Log streaming
   onLogLine: (callback) => {
-    ipcRenderer.on('log-line', (_event, data) => callback(data));
+    const wrappedCallback = (_event, data) => callback(data);
+    ipcRenderer.on('log-line', wrappedCallback);
+    return () => ipcRenderer.removeListener('log-line', wrappedCallback);
   },
 });

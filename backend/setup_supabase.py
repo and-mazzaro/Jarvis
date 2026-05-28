@@ -36,6 +36,7 @@ def setup():
     except Exception as e:
         print(f"[ERRORE] Setup fallito: {e}")
         print("Assicurati di aver creato le tabelle via SQL Editor su Supabase dashboard.")
+        raise e
 
 if __name__ == "__main__":
     try:

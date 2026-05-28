@@ -57,7 +57,7 @@
     const log = document.getElementById('log');
     let autoScroll = true;
 
-    window.jarvisIPC.onLogLine(data => {
+    const cleanup = window.jarvisIPC.onLogLine(data => {
       const lines = data.split('\n');
       lines.forEach(line => {
         const span = document.createElement('span');
@@ -65,7 +65,15 @@
         span.textContent = line + '\n';
         log.appendChild(span);
       });
+      // Ring buffer: maintain at most 1000 log lines to prevent DOM bloat
+      while (log.childElementCount > 1000) {
+        log.removeChild(log.firstElementChild);
+      }
       if (autoScroll) log.scrollTop = log.scrollHeight;
+    });
+
+    window.addEventListener('unload', () => {
+      if (typeof cleanup === 'function') cleanup();
     });
 
     document.getElementById('btn-clear').addEventListener('click', () => {

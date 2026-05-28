@@ -29,7 +29,6 @@ logger = logging.getLogger("jarvis.ws_server")
 
 # Injected by main.py via run_servers()
 _ingestor = None
-_retriever = None
 _kiwix_client = None
 _frontend_dist: Path = Path(__file__).parent.parent / "frontend" / "dist"
 
@@ -97,9 +96,11 @@ async def _handle_status(request: web.Request) -> web.Response:
     if _kiwix_client is not None:
         loop = asyncio.get_running_loop()
         kiwix_ok = await loop.run_in_executor(None, _kiwix_client.is_alive)
+    import os
     return _cors(web.json_response({
         "status": "ok",
         "kiwix": kiwix_ok,
+        "deepseek": bool(os.getenv("DEEPSEEK_API_KEY")),
         "rag_docs": len(_ingestor.list_files()) if _ingestor else 0,
     }))
 
@@ -133,6 +134,43 @@ async def _handle_ingest(request: web.Request) -> web.Response:
         return _cors(web.json_response(result))
     except Exception as exc:
         logger.error("Ingest error: %s", exc, exc_info=True)
+        return _cors(web.json_response({"error": str(exc)}, status=500))
+
+
+async def _handle_ingest_upload(request: web.Request) -> web.Response:
+    if _ingestor is None:
+        return _cors(web.json_response({"error": "Ingestor not initialised"}, status=503))
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None or field.name != 'file':
+            return _cors(web.json_response({"error": "No file field found"}, status=400))
+        
+        filename = field.filename
+        if not filename:
+            return _cors(web.json_response({"error": "No filename provided"}, status=400))
+            
+        safe_filename = Path(filename).name
+        dest_dir = Path(__file__).parent.parent / "documents"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / safe_filename
+        
+        size = 0
+        with open(dest_path, 'wb') as f:
+            while True:
+                chunk = await field.read_chunk()
+                if not chunk:
+                    break
+                size += len(chunk)
+                f.write(chunk)
+        
+        logger.info("Saved uploaded file %s (%d bytes) to %s", safe_filename, size, dest_path)
+        
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _ingestor.ingest_file, str(dest_path.resolve()))
+        return _cors(web.json_response(result))
+    except Exception as exc:
+        logger.error("Upload/Ingest error: %s", exc, exc_info=True)
         return _cors(web.json_response({"error": str(exc)}, status=500))
 
 
@@ -210,6 +248,7 @@ def make_app() -> web.Application:
     app.router.add_get("/api/status",           _handle_status)
     app.router.add_get("/api/kiwix/status",     _handle_kiwix_status)
     app.router.add_post("/api/ingest",          _handle_ingest)
+    app.router.add_post("/api/ingest/upload",   _handle_ingest_upload)
     app.router.add_get("/api/knowledge",        _handle_knowledge)
     app.router.add_post("/api/knowledge/delete",_handle_delete_file)
     app.router.add_post("/api/kiwix/search",    _handle_kiwix_search)
@@ -231,9 +270,8 @@ async def run_servers(
     kiwix_client,
     frontend_dist: Path,
 ) -> None:
-    global _ingestor, _retriever, _kiwix_client, _frontend_dist
+    global _ingestor, _kiwix_client, _frontend_dist
     _ingestor      = ingestor
-    _retriever     = retriever
     _kiwix_client  = kiwix_client
     _frontend_dist = frontend_dist
 

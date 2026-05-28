@@ -108,13 +108,15 @@ function resizeRenderer() {
 // ─── Animation loop ───────────────────────────────────────────────────────────
 
 let clock = new THREE.Clock();
+let animationFrameId = null;
 
 function animate() {
   if (orbView && orbView.classList.contains('hidden')) {
     // Non pianifica il frame successivo se l'orb non è visibile, risparmiando 100% della GPU
+    animationFrameId = null;
     return;
   }
-  requestAnimationFrame(animate);
+  animationFrameId = requestAnimationFrame(animate);
   const t   = clock.getElapsedTime();
   const pos = geometry.attributes.position.array;
 
@@ -193,7 +195,7 @@ function animate() {
 
 window.addEventListener('resize', resizeRenderer);
 resizeRenderer();
-animate();
+animationFrameId = requestAnimationFrame(animate);
 
 // ─── Window Controls ─────────────────────────────────────────────────────────
 
@@ -209,28 +211,39 @@ if (window.jarvisIPC) {
 const stateLabel    = document.getElementById('state-label');
 const transcriptEl  = document.getElementById('transcript-text');
 const dotWs         = document.getElementById('dot-ws');
+const dotDeepseek   = document.getElementById('dot-deepseek');
+const dotKiwix      = document.getElementById('dot-kiwix');
 
 let ws = null;
 let wsReconnectTimer = null;
 
 function connectWS() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  // Evita doppie connessioni se già connessa o in connecting
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   ws = new WebSocket(WS_URL);
 
   ws.addEventListener('open', () => {
     dotWs.className = 'status-dot online';
-    clearTimeout(wsReconnectTimer);
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
   });
 
   ws.addEventListener('message', (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       applyState(msg.state, msg);
-    } catch (_) {}
+    } catch (e) { console.warn('WS message parse error:', e); }
   });
 
   ws.addEventListener('close', () => {
     dotWs.className = 'status-dot offline';
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
     wsReconnectTimer = setTimeout(connectWS, 2000);
   });
 
@@ -243,8 +256,9 @@ function applyState(state, msg = {}) {
 
   const label = STATE_LABEL_MAP[state] || state.toUpperCase();
   stateLabel.textContent = label;
-  stateLabel.className   = '';
-  if (state === 'waiting')    stateLabel.classList.add('waiting');   // AGGIUNTO FASE 3
+  // Usa classList.remove esplicito invece di azzerare className
+  stateLabel.classList.remove('waiting', 'listening', 'generating', 'speaking', 'transcribing', 'retrieving');
+  if (state === 'waiting')    stateLabel.classList.add('waiting');
   if (state === 'listening')  stateLabel.classList.add('listening');
   if (state === 'generating') stateLabel.classList.add('generating');
   if (state === 'speaking')   stateLabel.classList.add('speaking');
@@ -270,6 +284,11 @@ btnOrb.addEventListener('click', () => {
   knowledgeView.classList.add('hidden');
   btnOrb.classList.add('active');
   btnKnowledge.classList.remove('active');
+  // Riavvia il render loop dell'orb se non è già attivo
+  if (animationFrameId === null) {
+    clock.start();
+    animate();
+  }
 });
 
 btnKnowledge.addEventListener('click', () => {
@@ -291,10 +310,22 @@ async function pollStatus() {
   try {
     const r = await fetch(`${API_URL}/api/status`);
     if (r.ok) {
-      dotWs.className = 'status-dot online';
+      const data = await r.json().catch(() => ({}));
+      if (dotDeepseek) {
+        dotDeepseek.className = data.deepseek ? 'status-dot online' : 'status-dot offline';
+      }
+      if (dotKiwix) {
+        dotKiwix.className = data.kiwix ? 'status-dot online' : 'status-dot offline';
+      }
       hideLoading();
+    } else {
+      if (dotDeepseek) dotDeepseek.className = 'status-dot offline';
+      if (dotKiwix) dotKiwix.className = 'status-dot offline';
     }
-  } catch (_) {}
+  } catch (_) {
+    if (dotDeepseek) dotDeepseek.className = 'status-dot offline';
+    if (dotKiwix) dotKiwix.className = 'status-dot offline';
+  }
 }
 
 // ─── Toast notifications ──────────────────────────────────────────────────────
@@ -336,20 +367,30 @@ const loadingPhrases = [
   'PREPARAZIONE CONOSCENZA',
   'QUASI PRONTO',
 ];
-setInterval(() => {
+const loadingPhraseTimer = setInterval(() => {
   loadingMessage.textContent = loadingPhrases[msgPhase % loadingPhrases.length];
   msgPhase++;
 }, 1200);
 
-// Poll backend until ready (max 30 seconds)
+// Poll backend until ready (max 30 seconds), poi pulisci il timer
 let pollCount = 0;
 const pollTimer = setInterval(async () => {
   pollCount++;
   await pollStatus();
-  if (loadingHidden || pollCount > 60) clearInterval(pollTimer);
+  if (loadingHidden || pollCount > 60) {
+    clearInterval(pollTimer);
+    clearInterval(loadingPhraseTimer); // Pulizia timer frasi caricamento
+  }
 }, 500);
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 connectWS();
-setInterval(pollStatus, 5000);
+let statusPollInterval = setInterval(pollStatus, 5000);
+
+window.addEventListener('beforeunload', () => {
+  clearInterval(statusPollInterval);
+  if (pollTimer) clearInterval(pollTimer);
+  if (loadingPhraseTimer) clearInterval(loadingPhraseTimer);
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+});

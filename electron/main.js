@@ -17,6 +17,7 @@ const {
   ipcMain,
   shell,
   dialog,
+  session,
 } = require('electron');
 const path    = require('path');
 const { spawn, exec } = require('child_process');
@@ -32,13 +33,46 @@ const POLL_TIMEOUT  = 180_000; // ms — 3 minuti per caricare i modelli pesanti
 let mainWindow  = null;
 let logWindow   = null;
 let backendProc = null;
+let kiwixProc   = null;
 let stdoutLines = [];
 
 // ─── Backend management ───────────────────────────────────────────────────────
 
 function startBackend() {
-  const bat = path.join(PROJECT_ROOT, 'launch.bat');
-  backendProc = spawn('cmd.exe', ['/c', bat], {
+  // 1. Avvia kiwix-serve come processo indipendente tracciato se il file ZIM esiste
+  const kiwixExe = path.join(PROJECT_ROOT, 'kiwix-serve.exe');
+  const fs = require('fs');
+  let selectedZim = null;
+  try {
+    const files = fs.readdirSync(PROJECT_ROOT);
+    const zimFiles = files.filter(f => f.startsWith('wikipedia_it_all_nopic_') && f.endsWith('.zim'));
+    if (zimFiles.length > 0) {
+      selectedZim = path.join(PROJECT_ROOT, zimFiles[0]);
+    }
+  } catch (e) {
+    console.error('Error scanning ZIM files:', e);
+  }
+
+  if (selectedZim && fs.existsSync(selectedZim)) {
+    console.log(`Starting kiwix-serve with ZIM: ${selectedZim}...`);
+    kiwixProc = spawn(kiwixExe, ['--port', '8888', selectedZim], {
+      cwd: PROJECT_ROOT,
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+    kiwixProc.on('error', err => {
+      console.error('Failed to spawn kiwix-serve process:', err);
+    });
+  } else {
+    console.warn('Wikipedia ZIM file not found, kiwix-serve skipped.');
+  }
+
+  // 3. Avvia il backend Python usando il python.exe del virtualenv
+  const pythonExe = path.join(PROJECT_ROOT, '.venv', 'Scripts', 'python.exe');
+  const backendMain = path.join(PROJECT_ROOT, 'backend', 'main.py');
+  
+  console.log(`Starting python backend: ${pythonExe}...`);
+  backendProc = spawn(pythonExe, [backendMain], {
     cwd:   PROJECT_ROOT,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -68,19 +102,22 @@ function startBackend() {
 
 function killBackend() {
   if (backendProc) {
+    console.log(`Killing backend process tree PID: ${backendProc.pid}`);
     exec(`taskkill /F /T /PID ${backendProc.pid}`, () => {});
     backendProc = null;
   }
-  // Also kill ollama + kiwix children
-  ['ollama.exe', 'kiwix-serve.exe'].forEach(name => {
-    exec(`taskkill /F /IM ${name}`, () => {});
-  });
+  if (kiwixProc) {
+    console.log(`Killing kiwix-serve process tree PID: ${kiwixProc.pid}`);
+    exec(`taskkill /F /T /PID ${kiwixProc.pid}`, () => {});
+    kiwixProc = null;
+  }
 }
 
 // ─── Backend polling ──────────────────────────────────────────────────────────
 
 function pollBackend(resolve, reject, start) {
   http.get(BACKEND_URL + '/api/status', res => {
+    res.resume(); // Consuma e rilascia il body della response per liberare la connessione e non bloccare i socket
     if (res.statusCode === 200) return resolve();
     retry(resolve, reject, start);
   }).on('error', () => retry(resolve, reject, start));
@@ -168,9 +205,11 @@ function buildMenu() {
           click: async () => {
             killBackend();
             startBackend();
+            if (!mainWindow || mainWindow.isDestroyed()) return;
             mainWindow.loadFile(path.join(__dirname, 'loading.html'));
             try {
               await waitForBackend();
+              if (!mainWindow || mainWindow.isDestroyed()) return;
               mainWindow.loadURL(BACKEND_URL);
             } catch (e) {
               dialog.showErrorBox('Jarvis', 'Backend failed to restart. Check logs.');
@@ -218,6 +257,24 @@ ipcMain.on('window-close',    () => app.quit());
 
 app.whenReady().then(async () => {
   buildMenu();
+  
+  // Imposta una Content Security Policy (CSP) per bloccare caricamento codice arbitrario ed XSS
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self' http://localhost:3000 ws://localhost:8765; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+          "font-src 'self' https://fonts.gstatic.com; " +
+          "img-src 'self' data:; " +
+          "connect-src 'self' http://localhost:3000 ws://localhost:8765 ws://localhost:3000;"
+        ]
+      }
+    });
+  });
+
   createMainWindow();
 
   // Se JARVIS_CONSOLE è settato, il backend è già stato avviato dallo script .bat
@@ -230,12 +287,13 @@ app.whenReady().then(async () => {
 
   try {
     await waitForBackend();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.loadURL(BACKEND_URL);
   } catch (e) {
     dialog.showErrorBox(
       'Jarvis — Backend Error',
       'The Python backend did not start in time.\n\n' +
-      'Make sure you ran setup.bat and that Ollama is installed.'
+      'Assicurati di aver eseguito setup.bat e di aver configurato DEEPSEEK_API_KEY nel file .env.'
     );
   }
 });

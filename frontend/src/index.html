@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Jarvis — your local AI voice assistant powered by Ollama, with offline Wikipedia and personal document knowledge base." />
+  <meta name="description" content="Jarvis — assistente vocale ibrido: STT/TTS/RAG locali, risposte via DeepSeek V4 Flash API." />
   <title>Jarvis — Assistente IA Locale</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -170,6 +170,7 @@
       transition: opacity 0.4s, transform 0.4s;
     }
     #orb-view.hidden { opacity: 0; pointer-events: none; transform: scale(0.97); visibility: hidden; }
+    .hidden { display: none !important; visibility: hidden !important; }
 
     #three-canvas {
       position: absolute;
@@ -673,8 +674,8 @@
     <!-- Status row -->
     <div id="status-row">
       <div class="status-pill">
-        <div class="status-dot" id="dot-ollama"></div>
-        <span>Ollama</span>
+        <div class="status-dot" id="dot-deepseek"></div>
+        <span>DeepSeek V4</span>
       </div>
       <div class="status-pill">
         <div class="status-dot" id="dot-kiwix"></div>

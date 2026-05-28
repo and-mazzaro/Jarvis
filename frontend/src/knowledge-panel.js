@@ -10,7 +10,9 @@
 
 'use strict';
 
-const API = 'http://localhost:3000';
+const API = (window.location.origin && window.location.origin.startsWith('http')) 
+  ? window.location.origin 
+  : 'http://localhost:3000';
 
 // ─── Tab switching ────────────────────────────────────────────────────────────
 
@@ -54,7 +56,7 @@ fileInput.addEventListener('change', () => {
 
 async function handleFiles(files) {
   const supported = files.filter(f =>
-    /\.(pdf|txt|docx|doc)$/i.test(f.name)
+    /\.(pdf|txt|docx)$/i.test(f.name)  // .doc rimosso: non supportato da python-docx
   );
 
   if (!supported.length) {
@@ -71,18 +73,28 @@ async function handleFiles(files) {
     progressBar.style.width = `${(done / supported.length) * 100}%`;
 
     try {
-      const res = await fetch(`${API}/api/ingest`, {
+      // Usa FormData per uploadare il contenuto reale del file.
+      // Funziona sia in Electron che nel browser (non dipende da file.path).
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+
+      const res = await fetch(`${API}/api/ingest/upload`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: file.path || file.name }),
+        body: formData,
       });
-      const data = await res.json();
-      if (data.error) {
-        showToast(`Errore: ${data.error}`, 'error');
-      } else if (data.already_indexed) {
-        showToast(`${file.name} già indicizzato.`, 'info');
+
+      if (!res.ok) {
+        const text = await res.text();
+        showToast(`Errore (${res.status}): ${text}`, 'error');
       } else {
-        showToast(`✓ ${file.name} — ${data.chunks_added} frammenti aggiunti.`, 'success');
+        const data = await res.json();
+        if (data.error) {
+          showToast(`Errore: ${data.error}`, 'error');
+        } else if (data.already_indexed) {
+          showToast(`${file.name} già indicizzato.`, 'info');
+        } else {
+          showToast(`✓ ${file.name} — ${data.chunks_added} frammenti aggiunti.`, 'success');
+        }
       }
     } catch (err) {
       showToast(`Errore nell'indicizzazione di ${file.name}: ${err.message}`, 'error');
@@ -126,7 +138,7 @@ function renderFileList(files) {
         <div class="file-icon">${icon}</div>
         <div class="file-info">
           <div class="file-name" title="${escapeHtml(f.file_name)}">${escapeHtml(f.file_name)}</div>
-          <div class="file-meta">${f.chunk_count} frammenti · ${date}</div>
+          <div class="file-meta">${escapeHtml(String(f.chunk_count ?? 0))} frammenti · ${escapeHtml(date)}</div>
         </div>
         <button class="file-delete" data-name="${escapeHtml(f.file_name)}" title="Rimuovi dall'indice">✕</button>
       </div>`;
@@ -138,13 +150,18 @@ function renderFileList(files) {
       const name = btn.dataset.name;
       if (!confirm(`Rimuovere "${name}" dalla conoscenza?`)) return;
       try {
-        await fetch(`${API}/api/knowledge/delete`, {
+        const res = await fetch(`${API}/api/knowledge/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ file_name: name }),
         });
-        showToast(`Rimosso ${name}.`, 'info');
-        await refreshFileList();
+        if (!res.ok) {
+          const text = await res.text();
+          showToast(`Eliminazione fallita (${res.status}): ${text}`, 'error');
+        } else {
+          showToast(`Rimosso ${name}.`, 'info');
+          await refreshFileList();
+        }
       } catch (err) {
         showToast(`Eliminazione fallita: ${err.message}`, 'error');
       }

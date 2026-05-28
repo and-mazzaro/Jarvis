@@ -23,9 +23,6 @@ voices-v1.0.json
 *.zim
 kiwix-*.exe
 
-# Ollama (managed by Ollama daemon)
-.ollama/
-
 # Node / Electron
 node_modules/
 dist-electron/

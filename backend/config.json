@@ -1,14 +1,10 @@
 {
   "llm": {
-    "base_url": "http://localhost:11434",
-    "model": "phi3:mini",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
     "temperature": 0.5,
     "max_tokens": 300,
-    "num_ctx": 2048,
-    "num_predict": 300,
-    "repeat_penalty": 1.1,
-    "top_k": 20,
-    "top_p": 0.9,
+    "thinking": "disabled",
     "stream": true
   },
   "stt": {

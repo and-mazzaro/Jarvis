@@ -57,14 +57,14 @@
   <script>
     const msgs = [
       'Starting backend…',
-      'Launching Ollama…',
+      'Connessione a DeepSeek V4 Flash…',
       'Loading models…',
       'Connecting…',
       'Almost ready…',
     ];
-    let i = 0;
+    let i = 1;
     const el = document.getElementById('msg');
-    setInterval(() => { el.textContent = msgs[++i % msgs.length]; }, 1800);
+    setInterval(() => { el.textContent = msgs[i++ % msgs.length]; }, 1800);
   </script>
 </body>
 </html>

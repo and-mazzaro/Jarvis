@@ -8,6 +8,8 @@ def sanitize_profile_value(val: str) -> str:
     val = val[:100].strip()
     # Rimuove a capo e tabulazioni
     val = re.sub(r'[\r\n\t]+', ' ', val)
+    # Rimuove delimitatori strutturali e caratteri di formattazione markdown
+    val = re.sub(r'[`#*=_\[\]\-{}]+', '', val)
     # Filtra parole chiave tipiche di prompt injection
     val = re.sub(r'(?i)\b(ignore|ignora|system\s+prompt|istruzioni|override|rules|regole|istruzione|precendete|precedenti)\b', '', val)
     return val.strip()
